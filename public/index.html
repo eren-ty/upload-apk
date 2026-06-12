@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MinIO 同步后台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <h1>MinIO 同步后台</h1>
+          <p id="configText">加载配置中...</p>
+        </div>
+        <button id="syncAllButton" class="secondary" type="button">同步全部</button>
+      </section>
+
+      <section class="grid">
+        <form id="urlForm" class="panel form">
+          <h2>新增下载地址</h2>
+          <label>
+            名称
+            <input id="nameInput" type="text" placeholder="例如 919 看球" autocomplete="off" />
+          </label>
+          <label>
+            下载链接
+            <input
+              id="urlInput"
+              type="url"
+              placeholder="https://example.com/app.apk"
+              autocomplete="off"
+              required
+            />
+          </label>
+          <label>
+            访问令牌
+            <input
+              id="tokenInput"
+              type="password"
+              placeholder="服务端未设置 ACCESS_TOKEN 时可留空"
+              autocomplete="current-password"
+            />
+          </label>
+          <button id="submitButton" type="submit">保存并同步</button>
+          <p id="messageText" class="message"></p>
+        </form>
+
+        <section class="panel list-panel">
+          <div class="section-head">
+            <h2>URL 列表</h2>
+            <button id="refreshButton" class="ghost" type="button">刷新</button>
+          </div>
+          <div id="urlList" class="url-list"></div>
+        </section>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2>最近任务</h2>
+          <span id="jobCountText" class="muted">0 个任务</span>
+        </div>
+        <div id="jobList" class="job-list"></div>
+      </section>
+    </main>
+
+    <template id="urlItemTemplate">
+      <article class="url-item">
+        <div class="url-main">
+          <input class="edit-name" type="text" aria-label="名称" />
+          <input class="edit-url" type="url" aria-label="URL" />
+          <div class="url-meta">
+            <span class="badge status-badge"></span>
+            <span class="last-sync"></span>
+          </div>
+        </div>
+        <div class="actions">
+          <label class="toggle">
+            <input class="enabled-toggle" type="checkbox" />
+            启用
+          </label>
+          <button class="save-button ghost" type="button">保存</button>
+          <button class="sync-button secondary" type="button">同步</button>
+          <button class="delete-button danger" type="button">删除</button>
+        </div>
+      </article>
+    </template>
+
+    <script>
+      const urlForm = document.querySelector("#urlForm");
+      const nameInput = document.querySelector("#nameInput");
+      const urlInput = document.querySelector("#urlInput");
+      const tokenInput = document.querySelector("#tokenInput");
+      const submitButton = document.querySelector("#submitButton");
+      const syncAllButton = document.querySelector("#syncAllButton");
+      const refreshButton = document.querySelector("#refreshButton");
+      const urlList = document.querySelector("#urlList");
+      const jobList = document.querySelector("#jobList");
+      const messageText = document.querySelector("#messageText");
+      const configText = document.querySelector("#configText");
+      const jobCountText = document.querySelector("#jobCountText");
+      const urlTemplate = document.querySelector("#urlItemTemplate");
+
+      const statusText = {
+        never: "未同步",
+        queued: "排队中",
+        running: "执行中",
+        done: "成功",
+        failed: "失败"
+      };
+
+      let pollTimer = null;
+
+      function authHeaders() {
+        const token = tokenInput.value.trim();
+        return token ? { Authorization: `Bearer ${token}` } : {};
+      }
+
+      async function requestJson(url, options = {}) {
+        const response = await fetch(url, {
+          ...options,
+          headers: {
+            ...(options.body ? { "content-type": "application/json" } : {}),
+            ...authHeaders(),
+            ...(options.headers || {})
+          }
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "请求失败");
+        return data;
+      }
+
+      function setMessage(message, isError = false) {
+        messageText.textContent = message || "";
+        messageText.dataset.error = isError ? "true" : "false";
+      }
+
+      function formatTime(value) {
+        if (!value) return "从未完成同步";
+        return new Date(value).toLocaleString();
+      }
+
+      async function loadConfig() {
+        try {
+          const config = await requestJson("/api/config");
+          configText.textContent = `目标: ${config.remotePath}；定时: 每 ${config.syncIntervalMinutes} 分钟；变更自动同步: ${
+            config.autoSyncOnChange ? "开启" : "关闭"
+          }`;
+        } catch (error) {
+          configText.textContent = error.message;
+        }
+      }
+
+      async function loadUrls() {
+        const data = await requestJson("/api/urls");
+        renderUrls(data.urls);
+      }
+
+      async function loadJobs() {
+        const data = await requestJson("/api/jobs");
+        jobCountText.textContent = `${data.jobs.length} 个任务`;
+        jobList.innerHTML = "";
+
+        if (data.jobs.length === 0) {
+          jobList.innerHTML = '<p class="empty">暂无任务。</p>';
+          return;
+        }
+
+        data.jobs.forEach((job) => {
+          const article = document.createElement("article");
+          article.className = "job-item";
+          article.innerHTML = `
+            <div class="job-title">
+              <strong>${escapeHtml(job.sourceName || job.filename)}</strong>
+              <span class="badge" data-status="${job.status}">${escapeHtml(job.status)}</span>
+            </div>
+            <p>${escapeHtml(job.url)}</p>
+            <pre>${escapeHtml((job.logs || []).slice(-8).join("\n"))}</pre>
+          `;
+          jobList.appendChild(article);
+        });
+      }
+
+      function renderUrls(urls) {
+        urlList.innerHTML = "";
+        if (urls.length === 0) {
+          urlList.innerHTML = '<p class="empty">还没有配置下载地址。</p>';
+          return;
+        }
+
+        urls.forEach((record) => {
+          const item = urlTemplate.content.firstElementChild.cloneNode(true);
+          const nameInputEl = item.querySelector(".edit-name");
+          const urlInputEl = item.querySelector(".edit-url");
+          const enabledToggle = item.querySelector(".enabled-toggle");
+          const statusBadge = item.querySelector(".status-badge");
+          const lastSync = item.querySelector(".last-sync");
+
+          nameInputEl.value = record.name;
+          urlInputEl.value = record.url;
+          enabledToggle.checked = record.enabled;
+          statusBadge.textContent = statusText[record.lastStatus] || record.lastStatus;
+          statusBadge.dataset.status = record.lastStatus;
+          lastSync.textContent = record.lastError ? record.lastError : formatTime(record.lastSyncedAt);
+
+          item.querySelector(".save-button").addEventListener("click", async () => {
+            try {
+              await requestJson(`/api/urls/${encodeURIComponent(record.id)}`, {
+                method: "PUT",
+                body: JSON.stringify({
+                  name: nameInputEl.value.trim(),
+                  url: urlInputEl.value.trim(),
+                  enabled: enabledToggle.checked
+                })
+              });
+              setMessage("已保存。");
+              await refreshAll();
+            } catch (error) {
+              setMessage(error.message, true);
+            }
+          });
+
+          item.querySelector(".sync-button").addEventListener("click", async () => {
+            try {
+              await requestJson(`/api/urls/${encodeURIComponent(record.id)}/sync`, { method: "POST" });
+              setMessage("已加入同步队列。");
+              startPolling();
+              await refreshAll();
+            } catch (error) {
+              setMessage(error.message, true);
+            }
+          });
+
+          item.querySelector(".delete-button").addEventListener("click", async () => {
+            if (!confirm(`确定删除 ${record.name} 吗？`)) return;
+            try {
+              await requestJson(`/api/urls/${encodeURIComponent(record.id)}`, { method: "DELETE" });
+              setMessage("已删除。");
+              await refreshAll();
+            } catch (error) {
+              setMessage(error.message, true);
+            }
+          });
+
+          urlList.appendChild(item);
+        });
+      }
+
+      async function refreshAll() {
+        await Promise.all([loadConfig(), loadUrls(), loadJobs()]);
+      }
+
+      function startPolling() {
+        clearInterval(pollTimer);
+        pollTimer = setInterval(() => {
+          refreshAll().catch((error) => setMessage(error.message, true));
+        }, 2500);
+      }
+
+      function escapeHtml(value) {
+        return String(value || "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      urlForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        submitButton.disabled = true;
+        setMessage("正在保存...");
+
+        try {
+          await requestJson("/api/urls", {
+            method: "POST",
+            body: JSON.stringify({
+              name: nameInput.value.trim(),
+              url: urlInput.value.trim(),
+              enabled: true
+            })
+          });
+          nameInput.value = "";
+          urlInput.value = "";
+          setMessage("已保存，并按配置触发同步。");
+          startPolling();
+          await refreshAll();
+        } catch (error) {
+          setMessage(error.message, true);
+        } finally {
+          submitButton.disabled = false;
+        }
+      });
+
+      syncAllButton.addEventListener("click", async () => {
+        try {
+          const data = await requestJson("/api/sync-all", { method: "POST" });
+          setMessage(`已加入 ${data.count} 个同步任务。`);
+          startPolling();
+          await refreshAll();
+        } catch (error) {
+          setMessage(error.message, true);
+        }
+      });
+
+      refreshButton.addEventListener("click", () => {
+        refreshAll().catch((error) => setMessage(error.message, true));
+      });
+
+      refreshAll().catch((error) => setMessage(error.message, true));
+    </script>
+  </body>
+</html>
