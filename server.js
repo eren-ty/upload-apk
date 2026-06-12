@@ -10,6 +10,7 @@ const HOST = process.env.HOST || "0.0.0.0";
 const REMOTE_PATH = process.env.REMOTE_PATH || "minio:app-pkg/downloads/apks";
 const RCLONE_CONFIG = process.env.RCLONE_CONFIG || "/root/.config/rclone/rsync_oss.conf";
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
+const SESSION_COOKIE = "upload_apk_token";
 const MAX_ACTIVE_JOBS = Number(process.env.MAX_ACTIVE_JOBS || 2);
 const SYNC_INTERVAL_MINUTES = Number(process.env.SYNC_INTERVAL_MINUTES || 360);
 const CHECK_INTERVAL_MINUTES = Number(process.env.CHECK_INTERVAL_MINUTES || 10);
@@ -57,7 +58,8 @@ function readBody(req) {
 function hasAccess(req) {
   if (!ACCESS_TOKEN) return true;
   const header = req.headers.authorization || "";
-  return header === `Bearer ${ACCESS_TOKEN}`;
+  const cookieToken = parseCookies(req.headers.cookie || "")[SESSION_COOKIE] || "";
+  return header === `Bearer ${ACCESS_TOKEN}` || cookieToken === ACCESS_TOKEN;
 }
 
 function requireAccess(req, res) {
@@ -68,6 +70,28 @@ function requireAccess(req, res) {
 
 function parseRequestUrl(req) {
   return new URL(req.url, `http://${req.headers.host || "localhost"}`);
+}
+
+function parseCookies(cookieHeader) {
+  return cookieHeader.split(";").reduce((cookies, pair) => {
+    const index = pair.indexOf("=");
+    if (index === -1) return cookies;
+    const key = pair.slice(0, index).trim();
+    const value = pair.slice(index + 1).trim();
+    if (key) cookies[key] = decodeURIComponent(value);
+    return cookies;
+  }, {});
+}
+
+function cookieOptions(maxAge) {
+  const parts = [
+    `${SESSION_COOKIE}=${encodeURIComponent(ACCESS_TOKEN)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax"
+  ];
+  if (maxAge !== undefined) parts.push(`Max-Age=${maxAge}`);
+  return parts.join("; ");
 }
 
 function loadUrlRecords() {
@@ -436,6 +460,37 @@ async function handleCreateJob(req, res) {
   }
 }
 
+async function handleLogin(req, res) {
+  try {
+    const body = JSON.parse(await readBody(req));
+    const token = String(body.token || "");
+    if (ACCESS_TOKEN && token !== ACCESS_TOKEN) {
+      sendJson(res, 401, { error: "登录密码不正确" });
+      return;
+    }
+
+    const payload = JSON.stringify({ ok: true });
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": Buffer.byteLength(payload),
+      "set-cookie": cookieOptions(7 * 24 * 60 * 60)
+    });
+    res.end(payload);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+  }
+}
+
+function handleLogout(req, res) {
+  const payload = JSON.stringify({ ok: true });
+  res.writeHead(200, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(payload),
+    "set-cookie": `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
+  });
+  res.end(payload);
+}
+
 function handleGetJob(req, res, id) {
   if (!requireAccess(req, res)) return;
 
@@ -573,6 +628,16 @@ async function handleCheckUpdates(req, res) {
 const server = http.createServer(async (req, res) => {
   const requestUrl = parseRequestUrl(req);
   const pathname = requestUrl.pathname;
+
+  if (req.method === "POST" && pathname === "/api/login") {
+    await handleLogin(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/logout") {
+    handleLogout(req, res);
+    return;
+  }
 
   if (req.method === "GET" && pathname === "/api/config") {
     if (!requireAccess(req, res)) return;

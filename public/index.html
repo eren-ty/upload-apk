@@ -7,6 +7,19 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <section id="loginView" class="login-view">
+      <form id="loginForm" class="login-panel">
+        <h1>MinIO 同步后台</h1>
+        <p>输入访问密码后进入管理后台。</p>
+        <label>
+          访问密码
+          <input id="loginTokenInput" type="password" autocomplete="current-password" required />
+        </label>
+        <button id="loginButton" type="submit">登录</button>
+        <p id="loginMessage" class="message"></p>
+      </form>
+    </section>
+
     <main class="shell">
       <section class="topbar">
         <div>
@@ -16,6 +29,7 @@
         <div class="top-actions">
           <button id="checkUpdatesButton" class="ghost" type="button">检测更新</button>
           <button id="syncAllButton" class="secondary" type="button">同步全部</button>
+          <button id="logoutButton" class="danger" type="button">退出</button>
         </div>
       </section>
 
@@ -34,15 +48,6 @@
               placeholder="https://example.com/app.apk"
               autocomplete="off"
               required
-            />
-          </label>
-          <label>
-            访问令牌
-            <input
-              id="tokenInput"
-              type="password"
-              placeholder="填写 systemd 里的 ACCESS_TOKEN"
-              autocomplete="current-password"
             />
           </label>
           <p class="hint">新增后会先同步一次；之后后台会自动检测远程文件更新，检测到变化再同步到 MinIO。</p>
@@ -91,13 +96,18 @@
     </template>
 
     <script>
+      const loginView = document.querySelector("#loginView");
+      const loginForm = document.querySelector("#loginForm");
+      const loginTokenInput = document.querySelector("#loginTokenInput");
+      const loginButton = document.querySelector("#loginButton");
+      const loginMessage = document.querySelector("#loginMessage");
       const urlForm = document.querySelector("#urlForm");
       const nameInput = document.querySelector("#nameInput");
       const urlInput = document.querySelector("#urlInput");
-      const tokenInput = document.querySelector("#tokenInput");
       const submitButton = document.querySelector("#submitButton");
       const syncAllButton = document.querySelector("#syncAllButton");
       const checkUpdatesButton = document.querySelector("#checkUpdatesButton");
+      const logoutButton = document.querySelector("#logoutButton");
       const refreshButton = document.querySelector("#refreshButton");
       const urlList = document.querySelector("#urlList");
       const jobList = document.querySelector("#jobList");
@@ -117,12 +127,9 @@
       };
 
       let pollTimer = null;
-      tokenInput.value = localStorage.getItem("uploadApkToken") || "";
 
       function authHeaders() {
-        const token = tokenInput.value.trim();
-        localStorage.setItem("uploadApkToken", token);
-        return token ? { Authorization: `Bearer ${token}` } : {};
+        return {};
       }
 
       async function requestJson(url, options = {}) {
@@ -136,6 +143,7 @@
         });
         const text = await response.text();
         const data = text ? JSON.parse(text) : {};
+        if (response.status === 401) showLogin();
         if (!response.ok) throw new Error(data.error || "请求失败");
         return data;
       }
@@ -262,6 +270,17 @@
 
       async function refreshAll() {
         await Promise.all([loadConfig(), loadUrls(), loadJobs()]);
+        hideLogin();
+      }
+
+      function showLogin() {
+        loginView.hidden = false;
+        document.body.classList.add("is-locked");
+      }
+
+      function hideLogin() {
+        loginView.hidden = true;
+        document.body.classList.remove("is-locked");
       }
 
       function startPolling() {
@@ -330,6 +349,37 @@
 
       refreshButton.addEventListener("click", () => {
         refreshAll().catch((error) => setMessage(error.message, true));
+      });
+
+      loginForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        loginButton.disabled = true;
+        loginMessage.textContent = "正在登录...";
+        loginMessage.dataset.error = "false";
+
+        try {
+          const response = await fetch("/api/login", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token: loginTokenInput.value.trim() })
+          });
+          const text = await response.text();
+          const data = text ? JSON.parse(text) : {};
+          if (!response.ok) throw new Error(data.error || "登录失败");
+          loginTokenInput.value = "";
+          loginMessage.textContent = "";
+          await refreshAll();
+        } catch (error) {
+          loginMessage.textContent = error.message;
+          loginMessage.dataset.error = "true";
+        } finally {
+          loginButton.disabled = false;
+        }
+      });
+
+      logoutButton.addEventListener("click", async () => {
+        await fetch("/api/logout", { method: "POST" });
+        showLogin();
       });
 
       refreshAll().catch((error) => setMessage(error.message, true));

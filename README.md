@@ -11,6 +11,7 @@
 - 支持按固定间隔定时同步全部启用的 URL
 - 支持定时检测远程文件是否更新，更新后才自动同步
 - URL 列表持久化保存到本地 JSON 文件
+- 支持后台登录认证，避免页面暴露后被随意操作
 - 后端仍然使用 `curl` 下载，使用 `rclone copy` 上传到 MinIO
 
 ## 运行要求
@@ -38,7 +39,7 @@ node server.js
 http://服务器IP:3000
 ```
 
-页面里的“访问令牌”填写 `ACCESS_TOKEN` 的值。如果服务端没有设置 `ACCESS_TOKEN`，页面可以留空，但不建议公网这样部署。
+打开页面后使用 `ACCESS_TOKEN` 的值登录。如果服务端没有设置 `ACCESS_TOKEN`，页面登录时可输入任意值，但不建议公网这样部署。
 
 ## 配置项
 
@@ -48,7 +49,7 @@ http://服务器IP:3000
 | `HOST` | `0.0.0.0` | Web 服务监听地址 |
 | `REMOTE_PATH` | `minio:app-pkg/downloads/apks` | rclone 上传目标 |
 | `RCLONE_CONFIG` | `/root/.config/rclone/rsync_oss.conf` | rclone 配置文件路径 |
-| `ACCESS_TOKEN` | 空 | 设置后，页面请求必须填写同一个令牌 |
+| `ACCESS_TOKEN` | 空 | 后台登录密码 |
 | `DATA_FILE` | `./data/urls.json` | URL 列表保存位置 |
 | `MAX_ACTIVE_JOBS` | `2` | 同时下载上传的任务数 |
 | `SYNC_INTERVAL_MINUTES` | `360` | 定时同步间隔；设为 `0` 表示关闭定时同步 |
