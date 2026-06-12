@@ -40,6 +40,13 @@ body {
   margin-bottom: 18px;
 }
 
+.top-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 h1,
 h2,
 p {
@@ -174,6 +181,12 @@ button.danger:hover {
   font-weight: 650;
 }
 
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .message[data-error="true"] {
   color: var(--danger);
 }
@@ -257,9 +270,15 @@ button.danger:hover {
 }
 
 .badge[data-status="queued"],
-.badge[data-status="running"] {
+.badge[data-status="running"],
+.badge[data-status="checked"] {
   border-color: rgba(180, 83, 9, 0.3);
   color: var(--warning);
+}
+
+.badge[data-status="check_failed"] {
+  border-color: rgba(180, 35, 24, 0.3);
+  color: var(--danger);
 }
 
 .job-item {

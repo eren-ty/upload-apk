@@ -9,6 +9,7 @@
 - 支持手动同步单个 URL
 - 支持手动同步全部 URL
 - 支持按固定间隔定时同步全部启用的 URL
+- 支持定时检测远程文件是否更新，更新后才自动同步
 - URL 列表持久化保存到本地 JSON 文件
 - 后端仍然使用 `curl` 下载，使用 `rclone copy` 上传到 MinIO
 
@@ -27,6 +28,7 @@ REMOTE_PATH="minio:app-pkg/downloads/apks" \
 RCLONE_CONFIG="/root/.config/rclone/rsync_oss.conf" \
 ACCESS_TOKEN="your-secret-token" \
 SYNC_INTERVAL_MINUTES=360 \
+CHECK_INTERVAL_MINUTES=10 \
 node server.js
 ```
 
@@ -50,6 +52,7 @@ http://服务器IP:3000
 | `DATA_FILE` | `./data/urls.json` | URL 列表保存位置 |
 | `MAX_ACTIVE_JOBS` | `2` | 同时下载上传的任务数 |
 | `SYNC_INTERVAL_MINUTES` | `360` | 定时同步间隔；设为 `0` 表示关闭定时同步 |
+| `CHECK_INTERVAL_MINUTES` | `10` | 检测远程文件是否更新的间隔；设为 `0` 表示关闭智能检测 |
 | `AUTO_SYNC_ON_CHANGE` | `true` | 新增或修改 URL 后是否自动同步 |
 | `SYNC_ON_START` | `false` | 服务启动后是否立即同步全部启用 URL |
 | `ALLOWED_EXTENSIONS` | `.apk` | 允许的文件后缀，多个用英文逗号分隔 |
@@ -70,6 +73,7 @@ Environment=REMOTE_PATH=minio:app-pkg/downloads/apks
 Environment=RCLONE_CONFIG=/root/.config/rclone/rsync_oss.conf
 Environment=ACCESS_TOKEN=your-secret-token
 Environment=SYNC_INTERVAL_MINUTES=360
+Environment=CHECK_INTERVAL_MINUTES=10
 Environment=AUTO_SYNC_ON_CHANGE=true
 Environment=DATA_FILE=/opt/url-to-minio-uploader/data/urls.json
 
@@ -79,7 +83,7 @@ WantedBy=multi-user.target
 
 ## 从旧脚本迁移
 
-把旧脚本里的 URL 通过页面逐条新增即可。新增后默认会立即同步一次，之后由服务按 `SYNC_INTERVAL_MINUTES` 定时同步。
+把旧脚本里的 URL 通过页面逐条新增即可。新增后默认会立即同步一次，之后服务会按 `CHECK_INTERVAL_MINUTES` 检测远程文件是否变化，检测到变化才重新同步；也可以按 `SYNC_INTERVAL_MINUTES` 做兜底的全量定时同步。
 
 如果你想直接导入，也可以编辑 `DATA_FILE` 指向的 JSON 文件，但更建议通过页面操作，避免格式写错。
 

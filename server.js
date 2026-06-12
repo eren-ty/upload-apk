@@ -12,6 +12,7 @@ const RCLONE_CONFIG = process.env.RCLONE_CONFIG || "/root/.config/rclone/rsync_o
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
 const MAX_ACTIVE_JOBS = Number(process.env.MAX_ACTIVE_JOBS || 2);
 const SYNC_INTERVAL_MINUTES = Number(process.env.SYNC_INTERVAL_MINUTES || 360);
+const CHECK_INTERVAL_MINUTES = Number(process.env.CHECK_INTERVAL_MINUTES || 10);
 const AUTO_SYNC_ON_CHANGE = process.env.AUTO_SYNC_ON_CHANGE !== "false";
 const SYNC_ON_START = process.env.SYNC_ON_START === "true";
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, "data", "urls.json");
@@ -25,6 +26,7 @@ const jobs = new Map();
 let activeJobs = 0;
 const queue = [];
 let urlRecords = [];
+let checkingUpdates = false;
 
 loadUrlRecords();
 
@@ -60,7 +62,7 @@ function hasAccess(req) {
 
 function requireAccess(req, res) {
   if (hasAccess(req)) return true;
-  sendJson(res, 401, { error: "unauthorized" });
+  sendJson(res, 401, { error: "访问令牌不正确，请填写服务端 ACCESS_TOKEN 的值" });
   return false;
 }
 
@@ -145,6 +147,54 @@ function runCommand(command, args, job) {
   });
 }
 
+function hasPendingJobForRecord(record) {
+  if (queue.some((job) => job.sourceId === record.id)) return true;
+  return Array.from(jobs.values()).some((job) => {
+    return job.sourceId === record.id && ["queued", "downloading", "uploading"].includes(job.status);
+  });
+}
+
+async function fetchRemoteFingerprint(url) {
+  const head = await fetchWithTimeout(url, { method: "HEAD" });
+  if (head.ok) return fingerprintFromResponse(head);
+
+  const partial = await fetchWithTimeout(url, {
+    method: "GET",
+    headers: { Range: "bytes=0-0" }
+  });
+  if (!partial.ok && partial.status !== 206) {
+    throw new Error(`远程检测失败: HTTP ${partial.status}`);
+  }
+  return fingerprintFromResponse(partial);
+}
+
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    return await fetch(url, { ...options, redirect: "follow", signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function fingerprintFromResponse(response) {
+  const etag = response.headers.get("etag") || "";
+  const lastModified = response.headers.get("last-modified") || "";
+  const contentLength = response.headers.get("content-length") || "";
+  const contentRange = response.headers.get("content-range") || "";
+  const fingerprint = [etag, lastModified, contentLength, contentRange].filter(Boolean).join("|");
+
+  return {
+    fingerprint: fingerprint || `status:${response.status}`,
+    etag,
+    lastModified,
+    contentLength,
+    contentRange,
+    checkedAt: new Date().toISOString()
+  };
+}
+
 function createJob({ url, filename, sourceId = null, sourceName = "" }) {
   const id = crypto.randomUUID();
   const job = {
@@ -200,10 +250,23 @@ async function processJob(job) {
     job.status = "done";
     job.finishedAt = new Date().toISOString();
     appendLog(job, "完成");
+    let remoteMeta = null;
+    if (job.sourceId) {
+      try {
+        remoteMeta = await fetchRemoteFingerprint(job.url);
+      } catch (error) {
+        appendLog(job, `同步后检测远程版本失败: ${error.message}`);
+      }
+    }
     updateSourceFromJob(job, {
       lastStatus: "done",
       lastJobId: job.id,
       lastSyncedAt: job.finishedAt,
+      lastCheckedAt: remoteMeta ? remoteMeta.checkedAt : undefined,
+      remoteFingerprint: remoteMeta ? remoteMeta.fingerprint : undefined,
+      remoteEtag: remoteMeta ? remoteMeta.etag : undefined,
+      remoteLastModified: remoteMeta ? remoteMeta.lastModified : undefined,
+      remoteContentLength: remoteMeta ? remoteMeta.contentLength : undefined,
       lastError: null
     });
   } catch (error) {
@@ -225,6 +288,9 @@ function updateSourceFromJob(job, patch) {
   if (!job.sourceId) return;
   const record = urlRecords.find((item) => item.id === job.sourceId);
   if (!record) return;
+  Object.keys(patch).forEach((key) => {
+    if (patch[key] === undefined) delete patch[key];
+  });
   Object.assign(record, patch);
   saveUrlRecords().catch((error) => console.error("Failed to update source record:", error.message));
 }
@@ -244,9 +310,14 @@ function createRecordFromBody(body) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     lastSyncedAt: null,
+    lastCheckedAt: null,
     lastStatus: "never",
     lastJobId: null,
-    lastError: null
+    lastError: null,
+    remoteFingerprint: null,
+    remoteEtag: null,
+    remoteLastModified: null,
+    remoteContentLength: null
   };
 }
 
@@ -271,6 +342,54 @@ function syncAllEnabled(reason) {
     .filter((record) => record.enabled)
     .map((record) => createSyncJobForRecord(record, reason))
     .filter(Boolean);
+}
+
+async function checkUpdatedUrls(reason) {
+  if (checkingUpdates) return [];
+  checkingUpdates = true;
+  const createdJobs = [];
+
+  try {
+    for (const record of urlRecords) {
+      if (!record.enabled || hasPendingJobForRecord(record)) continue;
+
+      try {
+        const remoteMeta = await fetchRemoteFingerprint(record.url);
+        const changed = record.remoteFingerprint && record.remoteFingerprint !== remoteMeta.fingerprint;
+        record.lastCheckedAt = remoteMeta.checkedAt;
+        record.remoteEtag = remoteMeta.etag;
+        record.remoteLastModified = remoteMeta.lastModified;
+        record.remoteContentLength = remoteMeta.contentLength;
+
+        if (!record.remoteFingerprint) {
+          record.remoteFingerprint = remoteMeta.fingerprint;
+          record.lastStatus = record.lastStatus === "never" ? "checked" : record.lastStatus;
+          record.lastError = null;
+          continue;
+        }
+
+        if (changed) {
+          record.remoteFingerprint = remoteMeta.fingerprint;
+          record.lastChangeAt = remoteMeta.checkedAt;
+          const job = createSyncJobForRecord(record, reason);
+          if (job) createdJobs.push(job);
+        } else {
+          record.lastStatus = record.lastStatus === "never" ? "checked" : record.lastStatus;
+          record.lastError = null;
+        }
+      } catch (error) {
+        record.lastCheckedAt = new Date().toISOString();
+        record.lastStatus = "check_failed";
+        record.lastError = error.message;
+      }
+    }
+
+    await saveUrlRecords();
+  } finally {
+    checkingUpdates = false;
+  }
+
+  return createdJobs;
 }
 
 function serveStatic(req, res) {
@@ -445,6 +564,12 @@ function handleSyncAll(req, res) {
   sendJson(res, 202, { count: created.length, jobs: created });
 }
 
+async function handleCheckUpdates(req, res) {
+  if (!requireAccess(req, res)) return;
+  const created = await checkUpdatedUrls("检测到远程文件更新后自动同步");
+  sendJson(res, 202, { count: created.length, jobs: created });
+}
+
 const server = http.createServer(async (req, res) => {
   const requestUrl = parseRequestUrl(req);
   const pathname = requestUrl.pathname;
@@ -454,6 +579,7 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, 200, {
       remotePath: REMOTE_PATH,
       syncIntervalMinutes: SYNC_INTERVAL_MINUTES,
+      checkIntervalMinutes: CHECK_INTERVAL_MINUTES,
       autoSyncOnChange: AUTO_SYNC_ON_CHANGE,
       allowedExtensions: ALLOWED_EXTENSIONS
     });
@@ -492,6 +618,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && pathname === "/api/check-updates") {
+    await handleCheckUpdates(req, res);
+    return;
+  }
+
   if (req.method === "GET" && pathname === "/api/jobs") {
     handleListJobs(req, res);
     return;
@@ -523,6 +654,7 @@ server.listen(PORT, HOST, () => {
   console.log(`RCLONE_CONFIG=${RCLONE_CONFIG}`);
   console.log(`DATA_FILE=${DATA_FILE}`);
   console.log(`SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES}`);
+  console.log(`CHECK_INTERVAL_MINUTES=${CHECK_INTERVAL_MINUTES}`);
   if (SYNC_ON_START) syncAllEnabled("服务启动后自动同步");
 });
 
@@ -530,4 +662,12 @@ if (SYNC_INTERVAL_MINUTES > 0) {
   setInterval(() => {
     syncAllEnabled("定时同步");
   }, SYNC_INTERVAL_MINUTES * 60 * 1000);
+}
+
+if (CHECK_INTERVAL_MINUTES > 0) {
+  setInterval(() => {
+    checkUpdatedUrls("检测到远程文件更新后自动同步").catch((error) => {
+      console.error("Failed to check URL updates:", error.message);
+    });
+  }, CHECK_INTERVAL_MINUTES * 60 * 1000);
 }
