@@ -377,11 +377,10 @@ async function processJob(job) {
     try {
       await runCommand("rclone", buildRcloneArgs(tmpFile), job, { timeoutMs: UPLOAD_MAX_SECONDS * 1000 });
     } catch (error) {
-      if (!error.timedOut) throw error;
-      appendLog(job, "上传命令超时，开始检查 MinIO 目标文件");
+      appendLog(job, error.timedOut ? "上传命令超时，开始检查 MinIO 目标文件" : "上传命令失败，开始检查 MinIO 目标文件");
       const uploaded = await verifyUploadedObject(tmpFile, job.filename, job);
       if (!uploaded) throw error;
-      appendLog(job, "上传命令超时但目标文件校验通过，按成功处理");
+      appendLog(job, "上传命令异常但目标文件校验通过，按成功处理");
     }
 
     job.status = "done";
