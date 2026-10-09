@@ -30,6 +30,9 @@ RCLONE_CONFIG="/root/.config/rclone/rsync_oss.conf" \
 ACCESS_TOKEN="your-secret-token" \
 SYNC_INTERVAL_MINUTES=360 \
 CHECK_INTERVAL_MINUTES=10 \
+RCLONE_PROGRESS=true \
+RCLONE_TIMEOUT=60s \
+RCLONE_CONNECT_TIMEOUT=10s \
 node server.js
 ```
 
@@ -49,6 +52,11 @@ http://服务器IP:3000
 | `HOST` | `0.0.0.0` | Web 服务监听地址 |
 | `REMOTE_PATH` | `minio:app-pkg/downloads/apks` | rclone 上传目标 |
 | `RCLONE_CONFIG` | `/root/.config/rclone/rsync_oss.conf` | rclone 配置文件路径 |
+| `RCLONE_PROGRESS` | `true` | 上传时是否输出 rclone 进度和速度 |
+| `RCLONE_TIMEOUT` | `60s` | rclone 上传无响应超时时间 |
+| `RCLONE_CONNECT_TIMEOUT` | `10s` | rclone 连接 MinIO 超时时间 |
+| `RCLONE_RETRIES` | `2` | rclone 失败重试次数 |
+| `RCLONE_LOW_LEVEL_RETRIES` | `2` | rclone 底层请求重试次数 |
 | `ACCESS_TOKEN` | 空 | 后台登录密码 |
 | `DATA_FILE` | `./data/urls.json` | URL 列表保存位置 |
 | `MAX_ACTIVE_JOBS` | `2` | 同时下载上传的任务数 |
@@ -72,6 +80,11 @@ Restart=always
 Environment=PORT=3000
 Environment=REMOTE_PATH=minio:app-pkg/downloads/apks
 Environment=RCLONE_CONFIG=/root/.config/rclone/rsync_oss.conf
+Environment=RCLONE_PROGRESS=true
+Environment=RCLONE_TIMEOUT=60s
+Environment=RCLONE_CONNECT_TIMEOUT=10s
+Environment=RCLONE_RETRIES=2
+Environment=RCLONE_LOW_LEVEL_RETRIES=2
 Environment=ACCESS_TOKEN=your-secret-token
 Environment=SYNC_INTERVAL_MINUTES=360
 Environment=CHECK_INTERVAL_MINUTES=10

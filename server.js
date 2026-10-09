@@ -9,6 +9,11 @@ const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const REMOTE_PATH = process.env.REMOTE_PATH || "minio:app-pkg/downloads/apks";
 const RCLONE_CONFIG = process.env.RCLONE_CONFIG || "/root/.config/rclone/rsync_oss.conf";
+const RCLONE_PROGRESS = process.env.RCLONE_PROGRESS !== "false";
+const RCLONE_TIMEOUT = process.env.RCLONE_TIMEOUT || "60s";
+const RCLONE_CONNECT_TIMEOUT = process.env.RCLONE_CONNECT_TIMEOUT || "10s";
+const RCLONE_RETRIES = process.env.RCLONE_RETRIES || "2";
+const RCLONE_LOW_LEVEL_RETRIES = process.env.RCLONE_LOW_LEVEL_RETRIES || "2";
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
 const SESSION_COOKIE = "upload_apk_token";
 const MAX_ACTIVE_JOBS = Number(process.env.MAX_ACTIVE_JOBS || 2);
@@ -188,6 +193,30 @@ function runCommand(command, args, job) {
   });
 }
 
+function buildRcloneArgs(file) {
+  const args = [
+    "copy",
+    file,
+    REMOTE_PATH,
+    "--config",
+    RCLONE_CONFIG,
+    "--timeout",
+    RCLONE_TIMEOUT,
+    "--contimeout",
+    RCLONE_CONNECT_TIMEOUT,
+    "--retries",
+    RCLONE_RETRIES,
+    "--low-level-retries",
+    RCLONE_LOW_LEVEL_RETRIES
+  ];
+
+  if (RCLONE_PROGRESS) {
+    args.push("--progress", "--stats", "1s", "--stats-one-line");
+  }
+
+  return args;
+}
+
 function hasPendingJobForRecord(record) {
   if (queue.some((job) => job.sourceId === record.id)) return true;
   return Array.from(jobs.values()).some((job) => {
@@ -286,7 +315,7 @@ async function processJob(job) {
 
     job.status = "uploading";
     appendLog(job, `开始上传到 MinIO: ${REMOTE_PATH}`);
-    await runCommand("rclone", ["copy", tmpFile, REMOTE_PATH, "--config", RCLONE_CONFIG], job);
+    await runCommand("rclone", buildRcloneArgs(tmpFile), job);
 
     job.status = "done";
     job.finishedAt = new Date().toISOString();
@@ -734,6 +763,11 @@ server.listen(PORT, HOST, () => {
   console.log(`URL to MinIO uploader listening on http://${HOST}:${PORT}`);
   console.log(`REMOTE_PATH=${REMOTE_PATH}`);
   console.log(`RCLONE_CONFIG=${RCLONE_CONFIG}`);
+  console.log(`RCLONE_PROGRESS=${RCLONE_PROGRESS}`);
+  console.log(`RCLONE_TIMEOUT=${RCLONE_TIMEOUT}`);
+  console.log(`RCLONE_CONNECT_TIMEOUT=${RCLONE_CONNECT_TIMEOUT}`);
+  console.log(`RCLONE_RETRIES=${RCLONE_RETRIES}`);
+  console.log(`RCLONE_LOW_LEVEL_RETRIES=${RCLONE_LOW_LEVEL_RETRIES}`);
   console.log(`DATA_FILE=${DATA_FILE}`);
   console.log(`SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES}`);
   console.log(`CHECK_INTERVAL_MINUTES=${CHECK_INTERVAL_MINUTES}`);
