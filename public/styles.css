@@ -342,6 +342,7 @@ button.danger:hover {
 .job-item pre {
   max-height: 420px;
   overflow: auto;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   margin: 0;
   padding: 12px;

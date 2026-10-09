@@ -191,7 +191,7 @@
         const empty = jobList.querySelector(".empty");
         if (empty) empty.remove();
 
-        data.jobs.forEach((job) => {
+        data.jobs.forEach((job, index) => {
           renderedIds.add(job.id);
           let article = existingItems.get(job.id);
           if (!article) {
@@ -226,7 +226,9 @@
             pre.scrollTop = nearBottom ? pre.scrollHeight : previousTop;
           }
 
-          jobList.appendChild(article);
+          if (jobList.children[index] !== article) {
+            jobList.insertBefore(article, jobList.children[index] || null);
+          }
         });
 
         existingItems.forEach((item, id) => {
@@ -313,10 +315,14 @@
       }
 
       async function refreshJobsOnly() {
+        const selection = window.getSelection();
+        if (selection && !selection.isCollapsed) return;
+
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
         await loadJobs();
         window.scrollTo(scrollX, scrollY);
+        requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
       }
 
       function showLogin() {
