@@ -177,45 +177,60 @@
 
       async function loadJobs() {
         const data = await requestJson("/api/jobs");
-        const previousScroll = new Map(
-          Array.from(jobList.querySelectorAll(".job-item")).map((item) => {
-            const pre = item.querySelector("pre");
-            return [
-              item.dataset.jobId,
-              {
-                top: pre ? pre.scrollTop : 0,
-                nearBottom: pre ? pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24 : true
-              }
-            ];
-          })
-        );
-
         jobCountText.textContent = `${data.jobs.length} 个任务`;
-        jobList.innerHTML = "";
 
         if (data.jobs.length === 0) {
           jobList.innerHTML = '<p class="empty">暂无任务。</p>';
           return;
         }
 
+        const existingItems = new Map(
+          Array.from(jobList.querySelectorAll(".job-item")).map((item) => [item.dataset.jobId, item])
+        );
+        const renderedIds = new Set();
+        const empty = jobList.querySelector(".empty");
+        if (empty) empty.remove();
+
         data.jobs.forEach((job) => {
-          const article = document.createElement("article");
-          article.className = "job-item";
-          article.dataset.jobId = job.id;
-          article.innerHTML = `
-            <div class="job-title">
-              <strong>${escapeHtml(job.sourceName || job.filename)}</strong>
-              <span class="badge" data-status="${job.status}">${escapeHtml(job.status)}</span>
-            </div>
-            <p>${escapeHtml(job.url)}</p>
-            <pre>${escapeHtml((job.logs || []).slice(-80).join("\n"))}</pre>
-          `;
-          jobList.appendChild(article);
-          const pre = article.querySelector("pre");
-          const scroll = previousScroll.get(job.id);
-          if (pre && scroll) {
-            pre.scrollTop = scroll.nearBottom ? pre.scrollHeight : scroll.top;
+          renderedIds.add(job.id);
+          let article = existingItems.get(job.id);
+          if (!article) {
+            article = document.createElement("article");
+            article.className = "job-item";
+            article.dataset.jobId = job.id;
+            article.innerHTML = `
+              <div class="job-title">
+                <strong></strong>
+                <span class="badge"></span>
+              </div>
+              <p></p>
+              <pre></pre>
+            `;
           }
+
+          const title = article.querySelector("strong");
+          const badge = article.querySelector(".badge");
+          const urlText = article.querySelector("p");
+          const pre = article.querySelector("pre");
+
+          title.textContent = job.sourceName || job.filename;
+          badge.textContent = statusText[job.status] || job.status;
+          badge.dataset.status = job.status;
+          urlText.textContent = job.url;
+
+          const nextLogs = (job.logs || []).slice(-80).join("\n");
+          if (pre.textContent !== nextLogs) {
+            const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24;
+            const previousTop = pre.scrollTop;
+            pre.textContent = nextLogs;
+            pre.scrollTop = nearBottom ? pre.scrollHeight : previousTop;
+          }
+
+          jobList.appendChild(article);
+        });
+
+        existingItems.forEach((item, id) => {
+          if (!renderedIds.has(id)) item.remove();
         });
       }
 
