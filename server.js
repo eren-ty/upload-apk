@@ -15,6 +15,7 @@ const RCLONE_CONNECT_TIMEOUT = process.env.RCLONE_CONNECT_TIMEOUT || "10s";
 const RCLONE_RETRIES = process.env.RCLONE_RETRIES || "2";
 const RCLONE_LOW_LEVEL_RETRIES = process.env.RCLONE_LOW_LEVEL_RETRIES || "2";
 const UPLOAD_MAX_SECONDS = Number(process.env.UPLOAD_MAX_SECONDS || 120);
+const DELETE_TIMEOUT_SECONDS = Number(process.env.DELETE_TIMEOUT_SECONDS || 180);
 const DELETE_RETRIES = Number(process.env.DELETE_RETRIES || 3);
 const DELETE_RETRY_DELAY_MS = Number(process.env.DELETE_RETRY_DELAY_MS || 3000);
 const UPLOAD_VIA_TEMP_OBJECT = process.env.UPLOAD_VIA_TEMP_OBJECT !== "false";
@@ -204,13 +205,30 @@ function runCommand(command, args, job, options = {}) {
       }, 5000);
     }, timeoutMs) : null;
 
+    const appendOutput = (chunk) => {
+      const text = chunk.toString();
+      if (options.suppressRcloneProgress) {
+        const usefulLines = text.split(/\r?\n/u).filter((line) => {
+          const trimmed = line.trim();
+          if (!trimmed) return false;
+          if (/^(Transferred|Checks|Deleted|Elapsed time|Checking):/u.test(trimmed)) return false;
+          if (/^\*/u.test(trimmed)) return false;
+          if (/^\d+(\.\d+)?\s*(B|KiB|MiB|GiB)\s*\/\s*/u.test(trimmed)) return false;
+          return true;
+        });
+        if (usefulLines.length > 0) appendLog(job, usefulLines.join("\n"));
+        return;
+      }
+      appendLog(job, text);
+    };
+
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
-      appendLog(job, chunk.toString());
+      appendOutput(chunk);
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
-      appendLog(job, chunk.toString());
+      appendOutput(chunk);
     });
     child.on("error", (error) => {
       if (timer) clearTimeout(timer);
@@ -355,7 +373,10 @@ async function deleteRemoteObject(filename, job, label = "对象") {
   for (let attempt = 1; attempt <= DELETE_RETRIES; attempt += 1) {
     try {
       appendLog(job, `删除${label}第 ${attempt}/${DELETE_RETRIES} 次: ${filename}`);
-      await runCommand("rclone", buildRcloneDeleteFileArgs(filename), job, { timeoutMs: 60 * 1000 });
+      await runCommand("rclone", buildRcloneDeleteFileArgs(filename), job, {
+        timeoutMs: DELETE_TIMEOUT_SECONDS * 1000,
+        suppressRcloneProgress: true
+      });
       appendLog(job, `已删除${label}: ${filename}`);
       return true;
     } catch (error) {
@@ -1009,6 +1030,9 @@ server.listen(PORT, HOST, () => {
   console.log(`RCLONE_RETRIES=${RCLONE_RETRIES}`);
   console.log(`RCLONE_LOW_LEVEL_RETRIES=${RCLONE_LOW_LEVEL_RETRIES}`);
   console.log(`UPLOAD_MAX_SECONDS=${UPLOAD_MAX_SECONDS}`);
+  console.log(`DELETE_TIMEOUT_SECONDS=${DELETE_TIMEOUT_SECONDS}`);
+  console.log(`DELETE_RETRIES=${DELETE_RETRIES}`);
+  console.log(`DELETE_RETRY_DELAY_MS=${DELETE_RETRY_DELAY_MS}`);
   console.log(`UPLOAD_VIA_TEMP_OBJECT=${UPLOAD_VIA_TEMP_OBJECT}`);
   console.log(`DATA_FILE=${DATA_FILE}`);
   console.log(`SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES}`);
