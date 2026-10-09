@@ -177,6 +177,19 @@
 
       async function loadJobs() {
         const data = await requestJson("/api/jobs");
+        const previousScroll = new Map(
+          Array.from(jobList.querySelectorAll(".job-item")).map((item) => {
+            const pre = item.querySelector("pre");
+            return [
+              item.dataset.jobId,
+              {
+                top: pre ? pre.scrollTop : 0,
+                nearBottom: pre ? pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24 : true
+              }
+            ];
+          })
+        );
+
         jobCountText.textContent = `${data.jobs.length} 个任务`;
         jobList.innerHTML = "";
 
@@ -188,6 +201,7 @@
         data.jobs.forEach((job) => {
           const article = document.createElement("article");
           article.className = "job-item";
+          article.dataset.jobId = job.id;
           article.innerHTML = `
             <div class="job-title">
               <strong>${escapeHtml(job.sourceName || job.filename)}</strong>
@@ -197,6 +211,11 @@
             <pre>${escapeHtml((job.logs || []).slice(-80).join("\n"))}</pre>
           `;
           jobList.appendChild(article);
+          const pre = article.querySelector("pre");
+          const scroll = previousScroll.get(job.id);
+          if (pre && scroll) {
+            pre.scrollTop = scroll.nearBottom ? pre.scrollHeight : scroll.top;
+          }
         });
       }
 
