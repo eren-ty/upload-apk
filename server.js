@@ -279,7 +279,9 @@ function buildRcloneDeleteFileArgs(filename) {
     "--timeout",
     RCLONE_TIMEOUT,
     "--contimeout",
-    RCLONE_CONNECT_TIMEOUT
+    RCLONE_CONNECT_TIMEOUT,
+    "--stats",
+    "0"
   ];
 }
 
@@ -347,8 +349,22 @@ async function deleteRemoteObject(filename, job, label = "对象") {
   try {
     await runCommand("rclone", buildRcloneDeleteFileArgs(filename), job, { timeoutMs: 60 * 1000 });
     appendLog(job, `已删除${label}: ${filename}`);
+    return true;
   } catch (error) {
-    appendLog(job, `删除${label}失败或对象不存在: ${filename}, ${error.message}`);
+    appendLog(job, `删除${label}命令异常，开始确认对象是否还存在: ${filename}, ${error.message}`);
+    try {
+      const info = await getRemoteObjectInfo(filename, job);
+      if (!info) {
+        appendLog(job, `${label}已不存在，按删除成功处理: ${filename}`);
+        return true;
+      }
+
+      appendLog(job, `${label}仍然存在，不能继续覆盖: ${filename}`);
+      return false;
+    } catch (checkError) {
+      appendLog(job, `查询${label}失败，通常表示对象已不存在，按删除成功处理: ${filename}, ${checkError.message}`);
+      return true;
+    }
   }
 }
 
@@ -387,7 +403,12 @@ async function uploadViaTempObject(file, job) {
     if (!tempReady) throw new Error("临时对象上传后校验失败");
 
     appendLog(job, "临时对象校验通过，先删除旧正式对象，避免同名覆盖卡住");
-    await deleteRemoteObject(job.filename, job, "旧正式对象");
+    const oldDeleted = await deleteRemoteObject(job.filename, job, "旧正式对象");
+    if (!oldDeleted) {
+      cleanupTemp = false;
+      appendLog(job, `旧正式对象删除未确认，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
+      throw new Error("旧正式对象删除未确认，停止创建新正式对象");
+    }
 
     const finalUploadStartedAt = new Date();
     appendLog(job, `开始创建新正式对象: ${remoteObjectPath(job.filename)}`);
