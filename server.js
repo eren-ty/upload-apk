@@ -15,6 +15,8 @@ const RCLONE_CONNECT_TIMEOUT = process.env.RCLONE_CONNECT_TIMEOUT || "10s";
 const RCLONE_RETRIES = process.env.RCLONE_RETRIES || "2";
 const RCLONE_LOW_LEVEL_RETRIES = process.env.RCLONE_LOW_LEVEL_RETRIES || "2";
 const UPLOAD_MAX_SECONDS = Number(process.env.UPLOAD_MAX_SECONDS || 120);
+const DELETE_RETRIES = Number(process.env.DELETE_RETRIES || 3);
+const DELETE_RETRY_DELAY_MS = Number(process.env.DELETE_RETRY_DELAY_MS || 3000);
 const UPLOAD_VIA_TEMP_OBJECT = process.env.UPLOAD_VIA_TEMP_OBJECT !== "false";
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
 const SESSION_COOKIE = "upload_apk_token";
@@ -178,6 +180,10 @@ function appendLog(job, message) {
   const line = `[${new Date().toISOString()}] ${text}`;
   job.logs.push(line);
   if (job.logs.length > 200) job.logs.shift();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function runCommand(command, args, job, options = {}) {
@@ -346,12 +352,16 @@ async function verifyUploadedObject(file, filename, job, options = {}) {
 }
 
 async function deleteRemoteObject(filename, job, label = "对象") {
-  try {
-    await runCommand("rclone", buildRcloneDeleteFileArgs(filename), job, { timeoutMs: 60 * 1000 });
-    appendLog(job, `已删除${label}: ${filename}`);
-    return true;
-  } catch (error) {
-    appendLog(job, `删除${label}命令异常，开始确认对象是否还存在: ${filename}, ${error.message}`);
+  for (let attempt = 1; attempt <= DELETE_RETRIES; attempt += 1) {
+    try {
+      appendLog(job, `删除${label}第 ${attempt}/${DELETE_RETRIES} 次: ${filename}`);
+      await runCommand("rclone", buildRcloneDeleteFileArgs(filename), job, { timeoutMs: 60 * 1000 });
+      appendLog(job, `已删除${label}: ${filename}`);
+      return true;
+    } catch (error) {
+      appendLog(job, `删除${label}命令异常，开始确认对象是否还存在: ${filename}, ${error.message}`);
+    }
+
     try {
       const info = await getRemoteObjectInfo(filename, job);
       if (!info) {
@@ -359,13 +369,20 @@ async function deleteRemoteObject(filename, job, label = "对象") {
         return true;
       }
 
-      appendLog(job, `${label}仍然存在，不能继续覆盖: ${filename}`);
-      return false;
+      appendLog(job, `${label}仍然存在: ${filename}`);
     } catch (checkError) {
       appendLog(job, `查询${label}失败，通常表示对象已不存在，按删除成功处理: ${filename}, ${checkError.message}`);
       return true;
     }
+
+    if (attempt < DELETE_RETRIES) {
+      appendLog(job, `${DELETE_RETRY_DELAY_MS}ms 后重试删除${label}: ${filename}`);
+      await sleep(DELETE_RETRY_DELAY_MS);
+    }
   }
+
+  appendLog(job, `${label}多次删除后仍然存在，不能继续覆盖: ${filename}`);
+  return false;
 }
 
 async function uploadDirectly(file, job) {
