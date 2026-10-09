@@ -14,6 +14,7 @@ const RCLONE_TIMEOUT = process.env.RCLONE_TIMEOUT || "60s";
 const RCLONE_CONNECT_TIMEOUT = process.env.RCLONE_CONNECT_TIMEOUT || "10s";
 const RCLONE_RETRIES = process.env.RCLONE_RETRIES || "2";
 const RCLONE_LOW_LEVEL_RETRIES = process.env.RCLONE_LOW_LEVEL_RETRIES || "2";
+const UPLOAD_MAX_SECONDS = Number(process.env.UPLOAD_MAX_SECONDS || 120);
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
 const SESSION_COOKIE = "upload_apk_token";
 const MAX_ACTIVE_JOBS = Number(process.env.MAX_ACTIVE_JOBS || 2);
@@ -178,17 +179,47 @@ function appendLog(job, message) {
   if (job.logs.length > 200) job.logs.shift();
 }
 
-function runCommand(command, args, job) {
+function runCommand(command, args, job, options = {}) {
   return new Promise((resolve, reject) => {
     appendLog(job, `$ ${command} ${args.map((arg) => JSON.stringify(arg)).join(" ")}`);
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let closed = false;
+    const timeoutMs = Number(options.timeoutMs || 0);
+    const timer = timeoutMs > 0 ? setTimeout(() => {
+      timedOut = true;
+      appendLog(job, `${command} 超过 ${Math.round(timeoutMs / 1000)} 秒未结束，强制终止`);
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!closed) child.kill("SIGKILL");
+      }, 5000);
+    }, timeoutMs) : null;
 
-    child.stdout.on("data", (chunk) => appendLog(job, chunk.toString()));
-    child.stderr.on("data", (chunk) => appendLog(job, chunk.toString()));
-    child.on("error", reject);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      appendLog(job, chunk.toString());
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      appendLog(job, chunk.toString());
+    });
+    child.on("error", (error) => {
+      if (timer) clearTimeout(timer);
+      reject(error);
+    });
     child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${command} exited with code ${code}`));
+      closed = true;
+      if (timer) clearTimeout(timer);
+      if (code === 0) resolve({ stdout, stderr });
+      else {
+        const error = new Error(timedOut ? `${command} timed out after ${Math.round(timeoutMs / 1000)} seconds` : `${command} exited with code ${code}`);
+        error.timedOut = timedOut;
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+      }
     });
   });
 }
@@ -215,6 +246,34 @@ function buildRcloneArgs(file) {
   }
 
   return args;
+}
+
+function buildRcloneLsjsonArgs(filename) {
+  return [
+    "lsjson",
+    `${REMOTE_PATH}/${filename}`,
+    "--config",
+    RCLONE_CONFIG
+  ];
+}
+
+async function getRemoteObjectSize(filename, job) {
+  const result = await runCommand("rclone", buildRcloneLsjsonArgs(filename), job);
+  const items = JSON.parse(result.stdout || "[]");
+  if (!Array.isArray(items) || items.length === 0) return null;
+  return Number(items[0].Size);
+}
+
+async function verifyUploadedObject(file, filename, job) {
+  const localStat = await fs.promises.stat(file);
+  const remoteSize = await getRemoteObjectSize(filename, job);
+  if (remoteSize === localStat.size) {
+    appendLog(job, `MinIO 目标文件已存在且大小一致: ${remoteSize} bytes`);
+    return true;
+  }
+
+  appendLog(job, `MinIO 目标文件大小不一致: local=${localStat.size}, remote=${remoteSize}`);
+  return false;
 }
 
 function hasPendingJobForRecord(record) {
@@ -315,7 +374,15 @@ async function processJob(job) {
 
     job.status = "uploading";
     appendLog(job, `开始上传到 MinIO: ${REMOTE_PATH}`);
-    await runCommand("rclone", buildRcloneArgs(tmpFile), job);
+    try {
+      await runCommand("rclone", buildRcloneArgs(tmpFile), job, { timeoutMs: UPLOAD_MAX_SECONDS * 1000 });
+    } catch (error) {
+      if (!error.timedOut) throw error;
+      appendLog(job, "上传命令超时，开始检查 MinIO 目标文件");
+      const uploaded = await verifyUploadedObject(tmpFile, job.filename, job);
+      if (!uploaded) throw error;
+      appendLog(job, "上传命令超时但目标文件校验通过，按成功处理");
+    }
 
     job.status = "done";
     job.finishedAt = new Date().toISOString();
@@ -768,6 +835,7 @@ server.listen(PORT, HOST, () => {
   console.log(`RCLONE_CONNECT_TIMEOUT=${RCLONE_CONNECT_TIMEOUT}`);
   console.log(`RCLONE_RETRIES=${RCLONE_RETRIES}`);
   console.log(`RCLONE_LOW_LEVEL_RETRIES=${RCLONE_LOW_LEVEL_RETRIES}`);
+  console.log(`UPLOAD_MAX_SECONDS=${UPLOAD_MAX_SECONDS}`);
   console.log(`DATA_FILE=${DATA_FILE}`);
   console.log(`SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES}`);
   console.log(`CHECK_INTERVAL_MINUTES=${CHECK_INTERVAL_MINUTES}`);

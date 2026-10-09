@@ -33,6 +33,7 @@ CHECK_INTERVAL_MINUTES=10 \
 RCLONE_PROGRESS=true \
 RCLONE_TIMEOUT=60s \
 RCLONE_CONNECT_TIMEOUT=10s \
+UPLOAD_MAX_SECONDS=120 \
 node server.js
 ```
 
@@ -57,6 +58,7 @@ http://服务器IP:3000
 | `RCLONE_CONNECT_TIMEOUT` | `10s` | rclone 连接 MinIO 超时时间 |
 | `RCLONE_RETRIES` | `2` | rclone 失败重试次数 |
 | `RCLONE_LOW_LEVEL_RETRIES` | `2` | rclone 底层请求重试次数 |
+| `UPLOAD_MAX_SECONDS` | `120` | 上传命令硬超时；超时后会检查 MinIO 目标文件大小，一致则按成功处理 |
 | `ACCESS_TOKEN` | 空 | 后台登录密码 |
 | `DATA_FILE` | `./data/urls.json` | URL 列表保存位置 |
 | `MAX_ACTIVE_JOBS` | `2` | 同时下载上传的任务数 |
@@ -85,6 +87,7 @@ Environment=RCLONE_TIMEOUT=60s
 Environment=RCLONE_CONNECT_TIMEOUT=10s
 Environment=RCLONE_RETRIES=2
 Environment=RCLONE_LOW_LEVEL_RETRIES=2
+Environment=UPLOAD_MAX_SECONDS=120
 Environment=ACCESS_TOKEN=your-secret-token
 Environment=SYNC_INTERVAL_MINUTES=360
 Environment=CHECK_INTERVAL_MINUTES=10
