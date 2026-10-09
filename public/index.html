@@ -255,7 +255,7 @@
                 })
               });
               setMessage("已保存。");
-              await refreshAll();
+              await refreshAll({ keepScroll: true });
             } catch (error) {
               setMessage(error.message, true);
             }
@@ -266,7 +266,7 @@
               await requestJson(`/api/urls/${encodeURIComponent(record.id)}/sync`, { method: "POST" });
               setMessage("已加入同步队列。");
               startPolling();
-              await refreshAll();
+              await refreshAll({ keepScroll: true });
             } catch (error) {
               setMessage(error.message, true);
             }
@@ -277,7 +277,7 @@
             try {
               await requestJson(`/api/urls/${encodeURIComponent(record.id)}`, { method: "DELETE" });
               setMessage("已删除。");
-              await refreshAll();
+              await refreshAll({ keepScroll: true });
             } catch (error) {
               setMessage(error.message, true);
             }
@@ -287,9 +287,21 @@
         });
       }
 
-      async function refreshAll() {
+      async function refreshAll(options = {}) {
+        const scrollX = window.scrollX;
+        const scrollY = window.scrollY;
         await Promise.all([loadConfig(), loadUrls(), loadJobs()]);
         hideLogin();
+        if (options.keepScroll) {
+          window.scrollTo(scrollX, scrollY);
+        }
+      }
+
+      async function refreshJobsOnly() {
+        const scrollX = window.scrollX;
+        const scrollY = window.scrollY;
+        await loadJobs();
+        window.scrollTo(scrollX, scrollY);
       }
 
       function showLogin() {
@@ -305,7 +317,7 @@
       function startPolling() {
         clearInterval(pollTimer);
         pollTimer = setInterval(() => {
-          refreshAll().catch((error) => setMessage(error.message, true));
+          refreshJobsOnly().catch((error) => setMessage(error.message, true));
         }, 2500);
       }
 
@@ -336,7 +348,7 @@
           urlInput.value = "";
           setMessage("已保存，并按配置触发同步。");
           startPolling();
-          await refreshAll();
+          await refreshAll({ keepScroll: true });
         } catch (error) {
           setMessage(error.message, true);
         } finally {
@@ -349,7 +361,7 @@
           const data = await requestJson("/api/sync-all", { method: "POST" });
           setMessage(`已加入 ${data.count} 个同步任务。`);
           startPolling();
-          await refreshAll();
+          await refreshAll({ keepScroll: true });
         } catch (error) {
           setMessage(error.message, true);
         }
@@ -360,14 +372,14 @@
           const data = await requestJson("/api/check-updates", { method: "POST" });
           setMessage(data.count > 0 ? `检测到更新，已加入 ${data.count} 个同步任务。` : "检测完成，没有发现更新。");
           startPolling();
-          await refreshAll();
+          await refreshAll({ keepScroll: true });
         } catch (error) {
           setMessage(error.message, true);
         }
       });
 
       refreshButton.addEventListener("click", () => {
-        refreshAll().catch((error) => setMessage(error.message, true));
+        refreshAll({ keepScroll: true }).catch((error) => setMessage(error.message, true));
       });
 
       loginForm.addEventListener("submit", async (event) => {
@@ -387,7 +399,7 @@
           if (!response.ok) throw new Error(data.error || "登录失败");
           loginTokenInput.value = "";
           loginMessage.textContent = "";
-          await refreshAll();
+          await refreshAll({ keepScroll: true });
         } catch (error) {
           loginMessage.textContent = error.message;
           loginMessage.dataset.error = "true";
@@ -401,7 +413,7 @@
         showLogin();
       });
 
-      refreshAll().catch((error) => setMessage(error.message, true));
+      refreshAll({ keepScroll: true }).catch((error) => setMessage(error.message, true));
     </script>
   </body>
 </html>
