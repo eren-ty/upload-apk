@@ -410,7 +410,6 @@ async function uploadViaTempObject(file, job) {
       throw new Error("旧正式对象删除未确认，停止创建新正式对象");
     }
 
-    const finalUploadStartedAt = new Date();
     appendLog(job, `开始创建新正式对象: ${remoteObjectPath(job.filename)}`);
     try {
       await runCommand("rclone", buildRcloneCopyToArgs(file, remoteObjectPath(job.filename)), job, {
@@ -418,7 +417,7 @@ async function uploadViaTempObject(file, job) {
       });
     } catch (error) {
       appendLog(job, error.timedOut ? "正式对象创建超时，开始检查正式对象" : "正式对象创建异常，开始检查正式对象");
-      const uploaded = await verifyUploadedObject(file, job.filename, job, { minModTime: finalUploadStartedAt });
+      const uploaded = await verifyUploadedObject(file, job.filename, job);
       if (!uploaded) {
         cleanupTemp = false;
         appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
@@ -427,7 +426,7 @@ async function uploadViaTempObject(file, job) {
       appendLog(job, "正式对象校验通过，按成功处理");
     }
 
-    const finalReady = await verifyUploadedObject(file, job.filename, job, { minModTime: finalUploadStartedAt });
+    const finalReady = await verifyUploadedObject(file, job.filename, job);
     if (!finalReady) {
       cleanupTemp = false;
       appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
