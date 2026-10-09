@@ -194,7 +194,7 @@
               <span class="badge" data-status="${job.status}">${escapeHtml(job.status)}</span>
             </div>
             <p>${escapeHtml(job.url)}</p>
-            <pre>${escapeHtml((job.logs || []).slice(-8).join("\n"))}</pre>
+            <pre>${escapeHtml((job.logs || []).slice(-80).join("\n"))}</pre>
           `;
           jobList.appendChild(article);
         });

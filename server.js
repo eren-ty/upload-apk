@@ -314,13 +314,20 @@ async function getRemoteObjectInfo(filename, job) {
   return items[0];
 }
 
+function parseRemoteModTime(value) {
+  const text = String(value || "").trim();
+  if (!text) return NaN;
+  const normalized = text.replace(/(\.\d{3})\d+([+-]\d{2}:\d{2}|Z)$/u, "$1$2");
+  return Date.parse(normalized);
+}
+
 async function verifyUploadedObject(file, filename, job, options = {}) {
   const localStat = await fs.promises.stat(file);
   const remoteInfo = await getRemoteObjectInfo(filename, job);
   const remoteSize = remoteInfo ? Number(remoteInfo.Size) : null;
   if (remoteSize === localStat.size) {
     if (options.minModTime) {
-      const remoteModTime = Date.parse(remoteInfo.ModTime || "");
+      const remoteModTime = parseRemoteModTime(remoteInfo.ModTime);
       const minModTime = options.minModTime.getTime() - 5000;
       if (!Number.isFinite(remoteModTime) || remoteModTime < minModTime) {
         appendLog(job, `MinIO 目标文件大小一致但更新时间未刷新: remote=${remoteInfo.ModTime || "unknown"}`);
