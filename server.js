@@ -288,13 +288,28 @@ function buildRcloneLsjsonArgs(filename) {
     "lsjson",
     remoteObjectPath(filename),
     "--config",
-    RCLONE_CONFIG
+    RCLONE_CONFIG,
+    "--stats",
+    "0"
   ];
+}
+
+function parseJsonArrayOutput(output) {
+  const text = String(output || "").trim();
+  if (!text) return [];
+
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error("rclone lsjson 没有返回有效 JSON");
+  }
+
+  return JSON.parse(text.slice(start, end + 1));
 }
 
 async function getRemoteObjectInfo(filename, job) {
   const result = await runCommand("rclone", buildRcloneLsjsonArgs(filename), job);
-  const items = JSON.parse(result.stdout || "[]");
+  const items = parseJsonArrayOutput(result.stdout);
   if (!Array.isArray(items) || items.length === 0) return null;
   return items[0];
 }
