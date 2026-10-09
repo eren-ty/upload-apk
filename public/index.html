@@ -245,6 +245,7 @@
 
         urls.forEach((record) => {
           const item = urlTemplate.content.firstElementChild.cloneNode(true);
+          item.dataset.urlId = record.id;
           const nameInputEl = item.querySelector(".edit-name");
           const urlInputEl = item.querySelector(".edit-url");
           const enabledToggle = item.querySelector(".enabled-toggle");
@@ -304,6 +305,24 @@
         });
       }
 
+      async function refreshUrlStatuses() {
+        const data = await requestJson("/api/urls");
+        data.urls.forEach((record) => {
+          const item = urlList.querySelector(`[data-url-id="${CSS.escape(record.id)}"]`);
+          if (!item) return;
+
+          const statusBadge = item.querySelector(".status-badge");
+          const lastSync = item.querySelector(".last-sync");
+          statusBadge.textContent = statusText[record.lastStatus] || record.lastStatus;
+          statusBadge.dataset.status = record.lastStatus;
+
+          const checked = record.lastCheckedAt ? `；检测 ${formatTime(record.lastCheckedAt)}` : "";
+          const changed = record.lastChangeAt ? `；更新 ${formatTime(record.lastChangeAt)}` : "";
+          const synced = record.lastSyncedAt ? `同步 ${formatTime(record.lastSyncedAt)}` : "从未完成同步";
+          lastSync.textContent = record.lastError ? record.lastError : `${synced}${checked}${changed}`;
+        });
+      }
+
       async function refreshAll(options = {}) {
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
@@ -320,7 +339,7 @@
 
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
-        await loadJobs();
+        await Promise.all([loadJobs(), refreshUrlStatuses()]);
         window.scrollTo(scrollX, scrollY);
         requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
       }
