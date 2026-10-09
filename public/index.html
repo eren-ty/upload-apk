@@ -122,6 +122,7 @@
         running: "执行中",
         done: "成功",
         failed: "失败",
+        interrupted: "已中断",
         checked: "已检测",
         check_failed: "检测失败"
       };
@@ -221,9 +222,8 @@
           statusBadge.dataset.status = record.lastStatus;
           const checked = record.lastCheckedAt ? `；检测 ${formatTime(record.lastCheckedAt)}` : "";
           const changed = record.lastChangeAt ? `；更新 ${formatTime(record.lastChangeAt)}` : "";
-          lastSync.textContent = record.lastError
-            ? record.lastError
-            : `同步 ${formatTime(record.lastSyncedAt)}${checked}${changed}`;
+          const synced = record.lastSyncedAt ? `同步 ${formatTime(record.lastSyncedAt)}` : "从未完成同步";
+          lastSync.textContent = record.lastError ? record.lastError : `${synced}${checked}${changed}`;
 
           item.querySelector(".save-button").addEventListener("click", async () => {
             try {

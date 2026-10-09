@@ -99,11 +99,28 @@ function loadUrlRecords() {
     const content = fs.readFileSync(DATA_FILE, "utf8");
     const data = JSON.parse(content);
     urlRecords = Array.isArray(data.urls) ? data.urls : [];
+    resetStaleRecordStatuses();
   } catch (error) {
     if (error.code !== "ENOENT") {
       console.error(`Failed to load ${DATA_FILE}:`, error.message);
     }
     urlRecords = [];
+  }
+}
+
+function resetStaleRecordStatuses() {
+  const staleStatuses = new Set(["queued", "running"]);
+  let changed = false;
+
+  for (const record of urlRecords) {
+    if (!staleStatuses.has(record.lastStatus)) continue;
+    record.lastStatus = record.lastSyncedAt ? "interrupted" : "never";
+    record.lastError = "上次任务因服务重启或进程退出中断，请重新同步";
+    changed = true;
+  }
+
+  if (changed) {
+    saveUrlRecords().catch((error) => console.error("Failed to reset stale URL statuses:", error.message));
   }
 }
 

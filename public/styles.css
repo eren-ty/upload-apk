@@ -310,7 +310,8 @@ button.danger:hover {
 
 .badge[data-status="queued"],
 .badge[data-status="running"],
-.badge[data-status="checked"] {
+.badge[data-status="checked"],
+.badge[data-status="interrupted"] {
   border-color: rgba(180, 83, 9, 0.3);
   color: var(--warning);
 }
