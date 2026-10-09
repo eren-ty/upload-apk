@@ -15,6 +15,7 @@ const RCLONE_CONNECT_TIMEOUT = process.env.RCLONE_CONNECT_TIMEOUT || "10s";
 const RCLONE_RETRIES = process.env.RCLONE_RETRIES || "2";
 const RCLONE_LOW_LEVEL_RETRIES = process.env.RCLONE_LOW_LEVEL_RETRIES || "2";
 const UPLOAD_MAX_SECONDS = Number(process.env.UPLOAD_MAX_SECONDS || 120);
+const UPLOAD_VIA_TEMP_OBJECT = process.env.UPLOAD_VIA_TEMP_OBJECT !== "false";
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
 const SESSION_COOKIE = "upload_apk_token";
 const MAX_ACTIVE_JOBS = Number(process.env.MAX_ACTIVE_JOBS || 2);
@@ -224,13 +225,12 @@ function runCommand(command, args, job, options = {}) {
   });
 }
 
-function buildRcloneArgs(file) {
-  const args = [
-    "copy",
-    file,
-    REMOTE_PATH,
-    "--config",
-    RCLONE_CONFIG,
+function remoteObjectPath(filename) {
+  return `${REMOTE_PATH.replace(/\/+$/, "")}/${filename}`;
+}
+
+function appendRcloneTransferOptions(args) {
+  args.push(
     "--timeout",
     RCLONE_TIMEOUT,
     "--contimeout",
@@ -239,7 +239,7 @@ function buildRcloneArgs(file) {
     RCLONE_RETRIES,
     "--low-level-retries",
     RCLONE_LOW_LEVEL_RETRIES
-  ];
+  );
 
   if (RCLONE_PROGRESS) {
     args.push("--progress", "--stats", "1s", "--stats-one-line");
@@ -248,32 +248,139 @@ function buildRcloneArgs(file) {
   return args;
 }
 
+function buildRcloneArgs(file) {
+  const args = [
+    "copy",
+    file,
+    REMOTE_PATH,
+    "--config",
+    RCLONE_CONFIG
+  ];
+
+  return appendRcloneTransferOptions(args);
+}
+
+function buildRcloneCopyToArgs(source, destination) {
+  return appendRcloneTransferOptions([
+    "copyto",
+    source,
+    destination,
+    "--config",
+    RCLONE_CONFIG
+  ]);
+}
+
+function buildRcloneDeleteFileArgs(filename) {
+  return [
+    "deletefile",
+    remoteObjectPath(filename),
+    "--config",
+    RCLONE_CONFIG,
+    "--timeout",
+    RCLONE_TIMEOUT,
+    "--contimeout",
+    RCLONE_CONNECT_TIMEOUT
+  ];
+}
+
 function buildRcloneLsjsonArgs(filename) {
   return [
     "lsjson",
-    `${REMOTE_PATH}/${filename}`,
+    remoteObjectPath(filename),
     "--config",
     RCLONE_CONFIG
   ];
 }
 
-async function getRemoteObjectSize(filename, job) {
+async function getRemoteObjectInfo(filename, job) {
   const result = await runCommand("rclone", buildRcloneLsjsonArgs(filename), job);
   const items = JSON.parse(result.stdout || "[]");
   if (!Array.isArray(items) || items.length === 0) return null;
-  return Number(items[0].Size);
+  return items[0];
 }
 
-async function verifyUploadedObject(file, filename, job) {
+async function verifyUploadedObject(file, filename, job, options = {}) {
   const localStat = await fs.promises.stat(file);
-  const remoteSize = await getRemoteObjectSize(filename, job);
+  const remoteInfo = await getRemoteObjectInfo(filename, job);
+  const remoteSize = remoteInfo ? Number(remoteInfo.Size) : null;
   if (remoteSize === localStat.size) {
+    if (options.minModTime) {
+      const remoteModTime = Date.parse(remoteInfo.ModTime || "");
+      const minModTime = options.minModTime.getTime() - 5000;
+      if (!Number.isFinite(remoteModTime) || remoteModTime < minModTime) {
+        appendLog(job, `MinIO 目标文件大小一致但更新时间未刷新: remote=${remoteInfo.ModTime || "unknown"}`);
+        return false;
+      }
+    }
+
     appendLog(job, `MinIO 目标文件已存在且大小一致: ${remoteSize} bytes`);
     return true;
   }
 
   appendLog(job, `MinIO 目标文件大小不一致: local=${localStat.size}, remote=${remoteSize}`);
   return false;
+}
+
+async function deleteRemoteObject(filename, job) {
+  try {
+    await runCommand("rclone", buildRcloneDeleteFileArgs(filename), job, { timeoutMs: 60 * 1000 });
+    appendLog(job, `已清理临时对象: ${filename}`);
+  } catch (error) {
+    appendLog(job, `清理临时对象失败: ${filename}, ${error.message}`);
+  }
+}
+
+async function uploadDirectly(file, job) {
+  appendLog(job, `开始上传到 MinIO: ${REMOTE_PATH}`);
+  try {
+    await runCommand("rclone", buildRcloneArgs(file), job, { timeoutMs: UPLOAD_MAX_SECONDS * 1000 });
+  } catch (error) {
+    appendLog(job, error.timedOut ? "上传命令超时，开始检查 MinIO 目标文件" : "上传命令失败，开始检查 MinIO 目标文件");
+    const uploaded = await verifyUploadedObject(file, job.filename, job);
+    if (!uploaded) throw error;
+    appendLog(job, "上传命令异常但目标文件校验通过，按成功处理");
+  }
+}
+
+async function uploadViaTempObject(file, job) {
+  const tempFilename = `${job.filename}.uploading-${Date.now()}-${job.id.slice(0, 8)}`;
+  let tempUploaded = false;
+
+  try {
+    appendLog(job, `开始上传到 MinIO 临时对象: ${remoteObjectPath(tempFilename)}`);
+    try {
+      await runCommand("rclone", buildRcloneCopyToArgs(file, remoteObjectPath(tempFilename)), job, {
+        timeoutMs: UPLOAD_MAX_SECONDS * 1000
+      });
+    } catch (error) {
+      appendLog(job, error.timedOut ? "临时对象上传超时，开始检查临时对象" : "临时对象上传异常，开始检查临时对象");
+      const uploaded = await verifyUploadedObject(file, tempFilename, job);
+      if (!uploaded) throw error;
+      appendLog(job, "临时对象校验通过，继续覆盖正式对象");
+    }
+
+    tempUploaded = true;
+    const tempReady = await verifyUploadedObject(file, tempFilename, job);
+    if (!tempReady) throw new Error("临时对象上传后校验失败");
+
+    const finalCopyStartedAt = new Date();
+    appendLog(job, `临时对象校验通过，开始覆盖正式对象: ${remoteObjectPath(job.filename)}`);
+    try {
+      await runCommand("rclone", buildRcloneCopyToArgs(remoteObjectPath(tempFilename), remoteObjectPath(job.filename)), job, {
+        timeoutMs: UPLOAD_MAX_SECONDS * 1000
+      });
+    } catch (error) {
+      appendLog(job, error.timedOut ? "正式对象覆盖超时，开始检查正式对象" : "正式对象覆盖异常，开始检查正式对象");
+      const uploaded = await verifyUploadedObject(file, job.filename, job, { minModTime: finalCopyStartedAt });
+      if (!uploaded) throw error;
+      appendLog(job, "正式对象校验通过，按成功处理");
+    }
+
+    const finalReady = await verifyUploadedObject(file, job.filename, job, { minModTime: finalCopyStartedAt });
+    if (!finalReady) throw new Error("正式对象覆盖后校验失败");
+  } finally {
+    if (tempUploaded) await deleteRemoteObject(tempFilename, job);
+  }
 }
 
 function hasPendingJobForRecord(record) {
@@ -373,14 +480,10 @@ async function processJob(job) {
     await runCommand("curl", ["-fSL", "--retry", "2", "--connect-timeout", "15", "-o", tmpFile, job.url], job);
 
     job.status = "uploading";
-    appendLog(job, `开始上传到 MinIO: ${REMOTE_PATH}`);
-    try {
-      await runCommand("rclone", buildRcloneArgs(tmpFile), job, { timeoutMs: UPLOAD_MAX_SECONDS * 1000 });
-    } catch (error) {
-      appendLog(job, error.timedOut ? "上传命令超时，开始检查 MinIO 目标文件" : "上传命令失败，开始检查 MinIO 目标文件");
-      const uploaded = await verifyUploadedObject(tmpFile, job.filename, job);
-      if (!uploaded) throw error;
-      appendLog(job, "上传命令异常但目标文件校验通过，按成功处理");
+    if (UPLOAD_VIA_TEMP_OBJECT) {
+      await uploadViaTempObject(tmpFile, job);
+    } else {
+      await uploadDirectly(tmpFile, job);
     }
 
     job.status = "done";
@@ -835,6 +938,7 @@ server.listen(PORT, HOST, () => {
   console.log(`RCLONE_RETRIES=${RCLONE_RETRIES}`);
   console.log(`RCLONE_LOW_LEVEL_RETRIES=${RCLONE_LOW_LEVEL_RETRIES}`);
   console.log(`UPLOAD_MAX_SECONDS=${UPLOAD_MAX_SECONDS}`);
+  console.log(`UPLOAD_VIA_TEMP_OBJECT=${UPLOAD_VIA_TEMP_OBJECT}`);
   console.log(`DATA_FILE=${DATA_FILE}`);
   console.log(`SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES}`);
   console.log(`CHECK_INTERVAL_MINUTES=${CHECK_INTERVAL_MINUTES}`);

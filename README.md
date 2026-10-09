@@ -12,7 +12,8 @@
 - 支持定时检测远程文件是否更新，更新后才自动同步
 - URL 列表持久化保存到本地 JSON 文件
 - 支持后台登录认证，避免页面暴露后被随意操作
-- 后端仍然使用 `curl` 下载，使用 `rclone copy` 上传到 MinIO
+- 后端仍然使用 `curl` 下载，使用 `rclone` 上传到 MinIO
+- 默认先上传到临时对象，再覆盖正式对象，减少直接覆盖已有文件时卡住的问题
 
 ## 运行要求
 
@@ -34,6 +35,7 @@ RCLONE_PROGRESS=true \
 RCLONE_TIMEOUT=60s \
 RCLONE_CONNECT_TIMEOUT=10s \
 UPLOAD_MAX_SECONDS=120 \
+UPLOAD_VIA_TEMP_OBJECT=true \
 node server.js
 ```
 
@@ -59,6 +61,7 @@ http://服务器IP:3000
 | `RCLONE_RETRIES` | `2` | rclone 失败重试次数 |
 | `RCLONE_LOW_LEVEL_RETRIES` | `2` | rclone 底层请求重试次数 |
 | `UPLOAD_MAX_SECONDS` | `120` | 上传命令硬超时；上传异常后会检查 MinIO 目标文件大小，一致则按成功处理 |
+| `UPLOAD_VIA_TEMP_OBJECT` | `true` | 先上传到临时对象，再覆盖正式对象；适合已有同名文件覆盖容易卡住的 MinIO 环境 |
 | `ACCESS_TOKEN` | 空 | 后台登录密码 |
 | `DATA_FILE` | `./data/urls.json` | URL 列表保存位置 |
 | `MAX_ACTIVE_JOBS` | `2` | 同时下载上传的任务数 |
@@ -88,6 +91,7 @@ Environment=RCLONE_CONNECT_TIMEOUT=10s
 Environment=RCLONE_RETRIES=2
 Environment=RCLONE_LOW_LEVEL_RETRIES=2
 Environment=UPLOAD_MAX_SECONDS=120
+Environment=UPLOAD_VIA_TEMP_OBJECT=true
 Environment=ACCESS_TOKEN=your-secret-token
 Environment=SYNC_INTERVAL_MINUTES=360
 Environment=CHECK_INTERVAL_MINUTES=10
