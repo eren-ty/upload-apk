@@ -336,12 +336,12 @@ async function verifyUploadedObject(file, filename, job, options = {}) {
   return false;
 }
 
-async function deleteRemoteObject(filename, job) {
+async function deleteRemoteObject(filename, job, label = "对象") {
   try {
     await runCommand("rclone", buildRcloneDeleteFileArgs(filename), job, { timeoutMs: 60 * 1000 });
-    appendLog(job, `已清理临时对象: ${filename}`);
+    appendLog(job, `已删除${label}: ${filename}`);
   } catch (error) {
-    appendLog(job, `清理临时对象失败: ${filename}, ${error.message}`);
+    appendLog(job, `删除${label}失败或对象不存在: ${filename}, ${error.message}`);
   }
 }
 
@@ -360,6 +360,7 @@ async function uploadDirectly(file, job) {
 async function uploadViaTempObject(file, job) {
   const tempFilename = `${job.filename}.uploading-${Date.now()}-${job.id.slice(0, 8)}`;
   let tempUploaded = false;
+  let cleanupTemp = true;
 
   try {
     appendLog(job, `开始上传到 MinIO 临时对象: ${remoteObjectPath(tempFilename)}`);
@@ -378,23 +379,34 @@ async function uploadViaTempObject(file, job) {
     const tempReady = await verifyUploadedObject(file, tempFilename, job);
     if (!tempReady) throw new Error("临时对象上传后校验失败");
 
-    const finalCopyStartedAt = new Date();
-    appendLog(job, `临时对象校验通过，开始覆盖正式对象: ${remoteObjectPath(job.filename)}`);
+    appendLog(job, "临时对象校验通过，先删除旧正式对象，避免同名覆盖卡住");
+    await deleteRemoteObject(job.filename, job, "旧正式对象");
+
+    const finalUploadStartedAt = new Date();
+    appendLog(job, `开始创建新正式对象: ${remoteObjectPath(job.filename)}`);
     try {
-      await runCommand("rclone", buildRcloneCopyToArgs(remoteObjectPath(tempFilename), remoteObjectPath(job.filename)), job, {
+      await runCommand("rclone", buildRcloneCopyToArgs(file, remoteObjectPath(job.filename)), job, {
         timeoutMs: UPLOAD_MAX_SECONDS * 1000
       });
     } catch (error) {
-      appendLog(job, error.timedOut ? "正式对象覆盖超时，开始检查正式对象" : "正式对象覆盖异常，开始检查正式对象");
-      const uploaded = await verifyUploadedObject(file, job.filename, job, { minModTime: finalCopyStartedAt });
-      if (!uploaded) throw error;
+      appendLog(job, error.timedOut ? "正式对象创建超时，开始检查正式对象" : "正式对象创建异常，开始检查正式对象");
+      const uploaded = await verifyUploadedObject(file, job.filename, job, { minModTime: finalUploadStartedAt });
+      if (!uploaded) {
+        cleanupTemp = false;
+        appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
+        throw error;
+      }
       appendLog(job, "正式对象校验通过，按成功处理");
     }
 
-    const finalReady = await verifyUploadedObject(file, job.filename, job, { minModTime: finalCopyStartedAt });
-    if (!finalReady) throw new Error("正式对象覆盖后校验失败");
+    const finalReady = await verifyUploadedObject(file, job.filename, job, { minModTime: finalUploadStartedAt });
+    if (!finalReady) {
+      cleanupTemp = false;
+      appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
+      throw new Error("正式对象创建后校验失败");
+    }
   } finally {
-    if (tempUploaded) await deleteRemoteObject(tempFilename, job);
+    if (tempUploaded && cleanupTemp) await deleteRemoteObject(tempFilename, job, "临时对象");
   }
 }
 
