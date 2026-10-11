@@ -39,6 +39,7 @@ DELETE_TIMEOUT_SECONDS=180 \
 DELETE_RETRIES=3 \
 DELETE_RETRY_DELAY_MS=3000 \
 UPLOAD_VIA_TEMP_OBJECT=true \
+DELETE_BEFORE_FINAL_UPLOAD=false \
 CLEANUP_TEMP_OBJECTS=true \
 TEMP_CLEANUP_MAX_PER_RUN=20 \
 node server.js
@@ -69,7 +70,8 @@ http://服务器IP:3000
 | `DELETE_TIMEOUT_SECONDS` | `180` | 删除旧正式对象单次等待秒数；部分 MinIO 删除会慢于上传 |
 | `DELETE_RETRIES` | `3` | 删除旧正式对象失败或超时后的重试次数 |
 | `DELETE_RETRY_DELAY_MS` | `3000` | 删除旧正式对象失败后的重试等待时间，单位毫秒 |
-| `UPLOAD_VIA_TEMP_OBJECT` | `true` | 先上传到临时对象，校验成功后删除旧正式对象，再创建新正式对象；适合已有同名文件覆盖容易卡住的 MinIO 环境 |
+| `UPLOAD_VIA_TEMP_OBJECT` | `true` | 先上传到临时对象，校验成功后再创建新正式对象 |
+| `DELETE_BEFORE_FINAL_UPLOAD` | `false` | 创建新正式对象前是否先删除旧正式对象；版本控制 bucket 建议保持 `false`，避免删除版本卡住 |
 | `CLEANUP_TEMP_OBJECTS` | `true` | 同步前后自动清理同名 `.uploading-*` 临时对象；旧正式对象仍存在时不会保留当前临时对象 |
 | `TEMP_CLEANUP_MAX_PER_RUN` | `20` | 单个任务最多清理多少个同名旧临时对象，避免一次任务清太久 |
 | `ACCESS_TOKEN` | 空 | 后台登录密码 |
@@ -105,6 +107,7 @@ Environment=DELETE_TIMEOUT_SECONDS=180
 Environment=DELETE_RETRIES=3
 Environment=DELETE_RETRY_DELAY_MS=3000
 Environment=UPLOAD_VIA_TEMP_OBJECT=true
+Environment=DELETE_BEFORE_FINAL_UPLOAD=false
 Environment=CLEANUP_TEMP_OBJECTS=true
 Environment=TEMP_CLEANUP_MAX_PER_RUN=20
 Environment=ACCESS_TOKEN=your-secret-token

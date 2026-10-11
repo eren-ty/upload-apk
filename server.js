@@ -19,6 +19,7 @@ const DELETE_TIMEOUT_SECONDS = Number(process.env.DELETE_TIMEOUT_SECONDS || 180)
 const DELETE_RETRIES = Number(process.env.DELETE_RETRIES || 3);
 const DELETE_RETRY_DELAY_MS = Number(process.env.DELETE_RETRY_DELAY_MS || 3000);
 const UPLOAD_VIA_TEMP_OBJECT = process.env.UPLOAD_VIA_TEMP_OBJECT !== "false";
+const DELETE_BEFORE_FINAL_UPLOAD = process.env.DELETE_BEFORE_FINAL_UPLOAD === "true";
 const CLEANUP_TEMP_OBJECTS = process.env.CLEANUP_TEMP_OBJECTS !== "false";
 const TEMP_CLEANUP_MAX_PER_RUN = Number(process.env.TEMP_CLEANUP_MAX_PER_RUN || 20);
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
@@ -493,11 +494,15 @@ async function uploadViaTempObject(file, job) {
     const tempReady = await verifyUploadedObject(file, tempFilename, job);
     if (!tempReady) throw new Error("临时对象上传后校验失败");
 
-    appendLog(job, "临时对象校验通过，先删除旧正式对象，避免同名覆盖卡住");
-    const oldDeleted = await deleteRemoteObject(job.filename, job, "旧正式对象");
-    if (!oldDeleted) {
-      appendLog(job, "旧正式对象仍在，当前临时对象不再保留");
-      throw new Error("旧正式对象删除未确认，停止创建新正式对象");
+    if (DELETE_BEFORE_FINAL_UPLOAD) {
+      appendLog(job, "临时对象校验通过，先删除旧正式对象，再创建新正式对象");
+      const oldDeleted = await deleteRemoteObject(job.filename, job, "旧正式对象");
+      if (!oldDeleted) {
+        appendLog(job, "旧正式对象仍在，当前临时对象不再保留");
+        throw new Error("旧正式对象删除未确认，停止创建新正式对象");
+      }
+    } else {
+      appendLog(job, "临时对象校验通过，直接创建新正式对象，不删除旧版本");
     }
 
     appendLog(job, `开始创建新正式对象: ${remoteObjectPath(job.filename)}`);
@@ -1088,6 +1093,7 @@ server.listen(PORT, HOST, () => {
   console.log(`DELETE_RETRIES=${DELETE_RETRIES}`);
   console.log(`DELETE_RETRY_DELAY_MS=${DELETE_RETRY_DELAY_MS}`);
   console.log(`UPLOAD_VIA_TEMP_OBJECT=${UPLOAD_VIA_TEMP_OBJECT}`);
+  console.log(`DELETE_BEFORE_FINAL_UPLOAD=${DELETE_BEFORE_FINAL_UPLOAD}`);
   console.log(`CLEANUP_TEMP_OBJECTS=${CLEANUP_TEMP_OBJECTS}`);
   console.log(`TEMP_CLEANUP_MAX_PER_RUN=${TEMP_CLEANUP_MAX_PER_RUN}`);
   console.log(`DATA_FILE=${DATA_FILE}`);
