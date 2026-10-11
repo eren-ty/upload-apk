@@ -461,11 +461,12 @@ async function cleanupTempObjects(filename, job, options = {}) {
 
 async function uploadDirectly(file, job) {
   appendLog(job, `开始上传到 MinIO: ${REMOTE_PATH}`);
+  const uploadStartedAt = new Date();
   try {
     await runCommand("rclone", buildRcloneArgs(file), job, { timeoutMs: UPLOAD_MAX_SECONDS * 1000 });
   } catch (error) {
     appendLog(job, error.timedOut ? "上传命令超时，开始检查 MinIO 目标文件" : "上传命令失败，开始检查 MinIO 目标文件");
-    const uploaded = await verifyUploadedObject(file, job.filename, job);
+    const uploaded = await verifyUploadedObject(file, job.filename, job, { minModTime: uploadStartedAt });
     if (!uploaded) throw error;
     appendLog(job, "上传命令异常但目标文件校验通过，按成功处理");
   }
@@ -506,6 +507,7 @@ async function uploadViaTempObject(file, job) {
       appendLog(job, "临时对象校验通过，直接创建新正式对象，不删除旧版本");
     }
 
+    const finalUploadStartedAt = new Date();
     appendLog(job, `开始创建新正式对象: ${remoteObjectPath(job.filename)}`);
     let finalCreated = false;
     try {
@@ -515,7 +517,7 @@ async function uploadViaTempObject(file, job) {
       finalCreated = true;
     } catch (error) {
       appendLog(job, error.timedOut ? "正式对象创建超时，开始检查正式对象" : "正式对象创建异常，开始检查正式对象");
-      const uploaded = await verifyUploadedObject(file, job.filename, job);
+      const uploaded = await verifyUploadedObject(file, job.filename, job, { minModTime: finalUploadStartedAt });
       if (uploaded) {
         appendLog(job, "正式对象校验通过，按成功处理");
         finalCreated = true;
@@ -528,7 +530,7 @@ async function uploadViaTempObject(file, job) {
           finalCreated = true;
         } catch (copyError) {
           appendLog(job, copyError.timedOut ? "临时对象复制为正式对象超时，开始检查正式对象" : "临时对象复制为正式对象异常，开始检查正式对象");
-          const copied = await verifyUploadedObject(file, job.filename, job);
+          const copied = await verifyUploadedObject(file, job.filename, job, { minModTime: finalUploadStartedAt });
           if (!copied) {
             cleanupTemp = false;
             appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
@@ -542,7 +544,7 @@ async function uploadViaTempObject(file, job) {
 
     if (!finalCreated) throw new Error("正式对象创建失败");
 
-    const finalReady = await verifyUploadedObject(file, job.filename, job);
+    const finalReady = await verifyUploadedObject(file, job.filename, job, { minModTime: finalUploadStartedAt });
     if (!finalReady) {
       cleanupTemp = false;
       appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
