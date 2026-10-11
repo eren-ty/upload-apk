@@ -19,6 +19,8 @@ const DELETE_TIMEOUT_SECONDS = Number(process.env.DELETE_TIMEOUT_SECONDS || 180)
 const DELETE_RETRIES = Number(process.env.DELETE_RETRIES || 3);
 const DELETE_RETRY_DELAY_MS = Number(process.env.DELETE_RETRY_DELAY_MS || 3000);
 const UPLOAD_VIA_TEMP_OBJECT = process.env.UPLOAD_VIA_TEMP_OBJECT !== "false";
+const CLEANUP_TEMP_OBJECTS = process.env.CLEANUP_TEMP_OBJECTS !== "false";
+const TEMP_CLEANUP_MAX_PER_RUN = Number(process.env.TEMP_CLEANUP_MAX_PER_RUN || 20);
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
 const SESSION_COOKIE = "upload_apk_token";
 const MAX_ACTIVE_JOBS = Number(process.env.MAX_ACTIVE_JOBS || 2);
@@ -320,6 +322,22 @@ function buildRcloneLsjsonArgs(filename) {
   ];
 }
 
+function buildRcloneLsfTempArgs(filename) {
+  return [
+    "lsf",
+    REMOTE_PATH,
+    "--config",
+    RCLONE_CONFIG,
+    "--files-only",
+    "--include",
+    `${filename}.uploading-*`,
+    "--format",
+    "p",
+    "--stats",
+    "0"
+  ];
+}
+
 function parseJsonArrayOutput(output) {
   const text = String(output || "").trim();
   if (!text) return [];
@@ -406,6 +424,39 @@ async function deleteRemoteObject(filename, job, label = "对象") {
   return false;
 }
 
+async function listTempObjects(filename, job) {
+  const result = await runCommand("rclone", buildRcloneLsfTempArgs(filename), job, { suppressRcloneProgress: true });
+  return result.stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line && line.startsWith(`${filename}.uploading-`));
+}
+
+async function cleanupTempObjects(filename, job, options = {}) {
+  if (!CLEANUP_TEMP_OBJECTS) return;
+
+  let tempObjects = [];
+  try {
+    tempObjects = await listTempObjects(filename, job);
+  } catch (error) {
+    appendLog(job, `查询同名临时对象失败，跳过清理: ${error.message}`);
+    return;
+  }
+
+  const exclude = new Set(options.exclude || []);
+  const candidates = tempObjects
+    .filter((tempObject) => !exclude.has(tempObject))
+    .sort()
+    .slice(0, TEMP_CLEANUP_MAX_PER_RUN);
+
+  if (candidates.length === 0) return;
+
+  appendLog(job, `开始清理同名旧临时对象: ${candidates.length} 个`);
+  for (const tempObject of candidates) {
+    await deleteRemoteObject(tempObject, job, "旧临时对象");
+  }
+}
+
 async function uploadDirectly(file, job) {
   appendLog(job, `开始上传到 MinIO: ${REMOTE_PATH}`);
   try {
@@ -424,6 +475,8 @@ async function uploadViaTempObject(file, job) {
   let cleanupTemp = true;
 
   try {
+    await cleanupTempObjects(job.filename, job);
+
     appendLog(job, `开始上传到 MinIO 临时对象: ${remoteObjectPath(tempFilename)}`);
     try {
       await runCommand("rclone", buildRcloneCopyToArgs(file, remoteObjectPath(tempFilename)), job, {
@@ -443,8 +496,7 @@ async function uploadViaTempObject(file, job) {
     appendLog(job, "临时对象校验通过，先删除旧正式对象，避免同名覆盖卡住");
     const oldDeleted = await deleteRemoteObject(job.filename, job, "旧正式对象");
     if (!oldDeleted) {
-      cleanupTemp = false;
-      appendLog(job, `旧正式对象删除未确认，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
+      appendLog(job, "旧正式对象仍在，当前临时对象不再保留");
       throw new Error("旧正式对象删除未确认，停止创建新正式对象");
     }
 
@@ -470,6 +522,8 @@ async function uploadViaTempObject(file, job) {
       appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
       throw new Error("正式对象创建后校验失败");
     }
+
+    await cleanupTempObjects(job.filename, job, { exclude: [tempFilename] });
   } finally {
     if (tempUploaded && cleanupTemp) await deleteRemoteObject(tempFilename, job, "临时对象");
   }
@@ -1034,6 +1088,8 @@ server.listen(PORT, HOST, () => {
   console.log(`DELETE_RETRIES=${DELETE_RETRIES}`);
   console.log(`DELETE_RETRY_DELAY_MS=${DELETE_RETRY_DELAY_MS}`);
   console.log(`UPLOAD_VIA_TEMP_OBJECT=${UPLOAD_VIA_TEMP_OBJECT}`);
+  console.log(`CLEANUP_TEMP_OBJECTS=${CLEANUP_TEMP_OBJECTS}`);
+  console.log(`TEMP_CLEANUP_MAX_PER_RUN=${TEMP_CLEANUP_MAX_PER_RUN}`);
   console.log(`DATA_FILE=${DATA_FILE}`);
   console.log(`SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES}`);
   console.log(`CHECK_INTERVAL_MINUTES=${CHECK_INTERVAL_MINUTES}`);
