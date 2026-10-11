@@ -15,6 +15,7 @@ const RCLONE_CONNECT_TIMEOUT = process.env.RCLONE_CONNECT_TIMEOUT || "10s";
 const RCLONE_RETRIES = process.env.RCLONE_RETRIES || "2";
 const RCLONE_LOW_LEVEL_RETRIES = process.env.RCLONE_LOW_LEVEL_RETRIES || "2";
 const UPLOAD_MAX_SECONDS = Number(process.env.UPLOAD_MAX_SECONDS || 120);
+const FINALIZE_MAX_SECONDS = Number(process.env.FINALIZE_MAX_SECONDS || UPLOAD_MAX_SECONDS);
 const DELETE_TIMEOUT_SECONDS = Number(process.env.DELETE_TIMEOUT_SECONDS || 180);
 const DELETE_RETRIES = Number(process.env.DELETE_RETRIES || 3);
 const DELETE_RETRY_DELAY_MS = Number(process.env.DELETE_RETRY_DELAY_MS || 3000);
@@ -506,20 +507,40 @@ async function uploadViaTempObject(file, job) {
     }
 
     appendLog(job, `开始创建新正式对象: ${remoteObjectPath(job.filename)}`);
+    let finalCreated = false;
     try {
       await runCommand("rclone", buildRcloneCopyToArgs(file, remoteObjectPath(job.filename)), job, {
-        timeoutMs: UPLOAD_MAX_SECONDS * 1000
+        timeoutMs: FINALIZE_MAX_SECONDS * 1000
       });
+      finalCreated = true;
     } catch (error) {
       appendLog(job, error.timedOut ? "正式对象创建超时，开始检查正式对象" : "正式对象创建异常，开始检查正式对象");
       const uploaded = await verifyUploadedObject(file, job.filename, job);
-      if (!uploaded) {
-        cleanupTemp = false;
-        appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
-        throw error;
+      if (uploaded) {
+        appendLog(job, "正式对象校验通过，按成功处理");
+        finalCreated = true;
+      } else {
+        appendLog(job, "本地创建正式对象未完成，尝试从 MinIO 临时对象复制到正式对象");
+        try {
+          await runCommand("rclone", buildRcloneCopyToArgs(remoteObjectPath(tempFilename), remoteObjectPath(job.filename)), job, {
+            timeoutMs: FINALIZE_MAX_SECONDS * 1000
+          });
+          finalCreated = true;
+        } catch (copyError) {
+          appendLog(job, copyError.timedOut ? "临时对象复制为正式对象超时，开始检查正式对象" : "临时对象复制为正式对象异常，开始检查正式对象");
+          const copied = await verifyUploadedObject(file, job.filename, job);
+          if (!copied) {
+            cleanupTemp = false;
+            appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
+            throw copyError;
+          }
+          appendLog(job, "正式对象校验通过，按成功处理");
+          finalCreated = true;
+        }
       }
-      appendLog(job, "正式对象校验通过，按成功处理");
     }
+
+    if (!finalCreated) throw new Error("正式对象创建失败");
 
     const finalReady = await verifyUploadedObject(file, job.filename, job);
     if (!finalReady) {
@@ -1089,6 +1110,7 @@ server.listen(PORT, HOST, () => {
   console.log(`RCLONE_RETRIES=${RCLONE_RETRIES}`);
   console.log(`RCLONE_LOW_LEVEL_RETRIES=${RCLONE_LOW_LEVEL_RETRIES}`);
   console.log(`UPLOAD_MAX_SECONDS=${UPLOAD_MAX_SECONDS}`);
+  console.log(`FINALIZE_MAX_SECONDS=${FINALIZE_MAX_SECONDS}`);
   console.log(`DELETE_TIMEOUT_SECONDS=${DELETE_TIMEOUT_SECONDS}`);
   console.log(`DELETE_RETRIES=${DELETE_RETRIES}`);
   console.log(`DELETE_RETRY_DELAY_MS=${DELETE_RETRY_DELAY_MS}`);

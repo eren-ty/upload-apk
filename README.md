@@ -35,6 +35,7 @@ RCLONE_PROGRESS=true \
 RCLONE_TIMEOUT=60s \
 RCLONE_CONNECT_TIMEOUT=10s \
 UPLOAD_MAX_SECONDS=120 \
+FINALIZE_MAX_SECONDS=300 \
 DELETE_TIMEOUT_SECONDS=180 \
 DELETE_RETRIES=3 \
 DELETE_RETRY_DELAY_MS=3000 \
@@ -67,6 +68,7 @@ http://服务器IP:3000
 | `RCLONE_RETRIES` | `2` | rclone 失败重试次数 |
 | `RCLONE_LOW_LEVEL_RETRIES` | `2` | rclone 底层请求重试次数 |
 | `UPLOAD_MAX_SECONDS` | `120` | 上传命令硬超时；上传异常后会检查 MinIO 目标文件大小，一致则按成功处理 |
+| `FINALIZE_MAX_SECONDS` | 同 `UPLOAD_MAX_SECONDS` | 创建正式对象的硬超时；版本控制 bucket 创建新版本较慢时可调大 |
 | `DELETE_TIMEOUT_SECONDS` | `180` | 删除旧正式对象单次等待秒数；部分 MinIO 删除会慢于上传 |
 | `DELETE_RETRIES` | `3` | 删除旧正式对象失败或超时后的重试次数 |
 | `DELETE_RETRY_DELAY_MS` | `3000` | 删除旧正式对象失败后的重试等待时间，单位毫秒 |
@@ -103,6 +105,7 @@ Environment=RCLONE_CONNECT_TIMEOUT=10s
 Environment=RCLONE_RETRIES=2
 Environment=RCLONE_LOW_LEVEL_RETRIES=2
 Environment=UPLOAD_MAX_SECONDS=120
+Environment=FINALIZE_MAX_SECONDS=300
 Environment=DELETE_TIMEOUT_SECONDS=180
 Environment=DELETE_RETRIES=3
 Environment=DELETE_RETRY_DELAY_MS=3000
