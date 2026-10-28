@@ -319,6 +319,8 @@ function buildRcloneLsjsonArgs(filename) {
     remoteObjectPath(filename),
     "--config",
     RCLONE_CONFIG,
+    "--progress=false",
+    "--stats-one-line=false",
     "--stats",
     "0"
   ];
@@ -335,6 +337,8 @@ function buildRcloneLsfTempArgs(filename) {
     `${filename}.uploading-*`,
     "--format",
     "p",
+    "--progress=false",
+    "--stats-one-line=false",
     "--stats",
     "0"
   ];
@@ -342,15 +346,14 @@ function buildRcloneLsfTempArgs(filename) {
 
 function parseJsonArrayOutput(output) {
   const text = String(output || "").trim();
-  if (!text) return [];
+  if (!text) throw new Error("rclone lsjson 返回空输出，无法确认对象状态");
 
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  if (start === -1 || end === -1 || end < start) {
-    throw new Error("rclone lsjson 没有返回有效 JSON");
-  }
-
-  return JSON.parse(text.slice(start, end + 1));
+  const cleaned = text.split(/\r?\n/u).filter((line) => {
+    return !/^\s*(Transferred|Checks|Deleted|Elapsed time):/u.test(line);
+  }).join("\n");
+  const items = JSON.parse(cleaned);
+  if (!Array.isArray(items)) throw new Error("rclone lsjson 没有返回有效 JSON 数组");
+  return items;
 }
 
 async function getRemoteObjectInfo(filename, job) {
@@ -412,8 +415,7 @@ async function deleteRemoteObject(filename, job, label = "对象") {
 
       appendLog(job, `${label}仍然存在: ${filename}`);
     } catch (checkError) {
-      appendLog(job, `查询${label}失败，通常表示对象已不存在，按删除成功处理: ${filename}, ${checkError.message}`);
-      return true;
+      appendLog(job, `查询${label}失败，无法确认删除结果: ${filename}, ${checkError.message}`);
     }
 
     if (attempt < DELETE_RETRIES) {
