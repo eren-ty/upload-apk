@@ -194,7 +194,13 @@ function sleep(ms) {
 function runCommand(command, args, job, options = {}) {
   return new Promise((resolve, reject) => {
     appendLog(job, `$ ${command} ${args.map((arg) => JSON.stringify(arg)).join(" ")}`);
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const env = options.machineOutput ? {
+      ...process.env,
+      RCLONE_PROGRESS: "false",
+      RCLONE_STATS: "0",
+      RCLONE_STATS_ONE_LINE: "false"
+    } : process.env;
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -317,6 +323,7 @@ function buildRcloneLsjsonArgs(filename) {
   return [
     "lsjson",
     remoteObjectPath(filename),
+    "--stat",
     "--config",
     RCLONE_CONFIG,
     "--progress=false",
@@ -344,23 +351,30 @@ function buildRcloneLsfTempArgs(filename) {
   ];
 }
 
-function parseJsonArrayOutput(output) {
+function parseRemoteObjectOutput(output) {
   const text = String(output || "").trim();
   if (!text) throw new Error("rclone lsjson 返回空输出，无法确认对象状态");
 
   const cleaned = text.split(/\r?\n/u).filter((line) => {
     return !/^\s*(Transferred|Checks|Deleted|Elapsed time):/u.test(line);
   }).join("\n");
-  const items = JSON.parse(cleaned);
-  if (!Array.isArray(items)) throw new Error("rclone lsjson 没有返回有效 JSON 数组");
-  return items;
+  const info = JSON.parse(cleaned);
+  if (!info || typeof info !== "object" || Array.isArray(info)) {
+    throw new Error("rclone lsjson --stat 没有返回有效对象");
+  }
+  if (info.IsDir === true) return null;
+  if (info.IsDir !== false || !Number.isSafeInteger(info.Size) || info.Size < 0) {
+    throw new Error("rclone 对象信息缺少有效的文件大小或类型");
+  }
+  return info;
 }
 
 async function getRemoteObjectInfo(filename, job) {
-  const result = await runCommand("rclone", buildRcloneLsjsonArgs(filename), job);
-  const items = parseJsonArrayOutput(result.stdout);
-  if (!Array.isArray(items) || items.length === 0) return null;
-  return items[0];
+  const result = await runCommand("rclone", buildRcloneLsjsonArgs(filename), job, {
+    machineOutput: true,
+    timeoutMs: UPLOAD_MAX_SECONDS * 1000
+  });
+  return parseRemoteObjectOutput(result.stdout);
 }
 
 function parseRemoteModTime(value) {
@@ -429,7 +443,11 @@ async function deleteRemoteObject(filename, job, label = "对象") {
 }
 
 async function listTempObjects(filename, job) {
-  const result = await runCommand("rclone", buildRcloneLsfTempArgs(filename), job, { suppressRcloneProgress: true });
+  const result = await runCommand("rclone", buildRcloneLsfTempArgs(filename), job, {
+    suppressRcloneProgress: true,
+    machineOutput: true,
+    timeoutMs: UPLOAD_MAX_SECONDS * 1000
+  });
   return result.stdout
     .split(/\r?\n/u)
     .map((line) => line.trim())
