@@ -392,7 +392,8 @@ async function verifyUploadedObject(file, filename, job) {
   const remoteInfo = await getRemoteObjectInfo(filename, job);
   const remoteSize = remoteInfo ? Number(remoteInfo.Size) : null;
   if (remoteSize === localStat.size) {
-    const remoteMd5 = String(remoteInfo.Hashes?.MD5 || "").toLowerCase();
+    const hashEntry = Object.entries(remoteInfo.Hashes || {}).find(([name]) => name.toLowerCase() === "md5");
+    const remoteMd5 = String(hashEntry?.[1] || "").toLowerCase();
     if (!/^[a-f0-9]{32}$/u.test(remoteMd5)) {
       appendLog(job, "MinIO 未返回有效 MD5，无法确认文件内容，校验未通过");
       return false;
