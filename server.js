@@ -265,6 +265,7 @@ function remoteObjectPath(filename) {
 
 function appendRcloneTransferOptions(args) {
   args.push(
+    "--ignore-times",
     "--timeout",
     RCLONE_TIMEOUT,
     "--contimeout",
@@ -324,6 +325,9 @@ function buildRcloneLsjsonArgs(filename) {
     "lsjson",
     remoteObjectPath(filename),
     "--stat",
+    "--hash",
+    "--hash-type",
+    "MD5",
     "--config",
     RCLONE_CONFIG,
     "--progress=false",
@@ -377,28 +381,28 @@ async function getRemoteObjectInfo(filename, job) {
   return parseRemoteObjectOutput(result.stdout);
 }
 
-function parseRemoteModTime(value) {
-  const text = String(value || "").trim();
-  if (!text) return NaN;
-  const normalized = text.replace(/(\.\d{3})\d+([+-]\d{2}:\d{2}|Z)$/u, "$1$2");
-  return Date.parse(normalized);
+async function fileMd5(file) {
+  const hash = crypto.createHash("md5");
+  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+  return hash.digest("hex");
 }
 
-async function verifyUploadedObject(file, filename, job, options = {}) {
+async function verifyUploadedObject(file, filename, job) {
   const localStat = await fs.promises.stat(file);
   const remoteInfo = await getRemoteObjectInfo(filename, job);
   const remoteSize = remoteInfo ? Number(remoteInfo.Size) : null;
   if (remoteSize === localStat.size) {
-    if (options.minModTime) {
-      const remoteModTime = parseRemoteModTime(remoteInfo.ModTime);
-      const minModTime = options.minModTime.getTime() - 5000;
-      if (!Number.isFinite(remoteModTime) || remoteModTime < minModTime) {
-        appendLog(job, `MinIO 目标文件大小一致但更新时间未刷新: remote=${remoteInfo.ModTime || "unknown"}`);
-        return false;
-      }
+    const remoteMd5 = String(remoteInfo.Hashes?.MD5 || "").toLowerCase();
+    if (!/^[a-f0-9]{32}$/u.test(remoteMd5)) {
+      appendLog(job, "MinIO 未返回有效 MD5，无法确认文件内容，校验未通过");
+      return false;
     }
-
-    appendLog(job, `MinIO 目标文件已存在且大小一致: ${remoteSize} bytes`);
+    const localMd5 = await fileMd5(file);
+    if (remoteMd5 !== localMd5) {
+      appendLog(job, `MinIO 文件大小一致但内容不同: localMD5=${localMd5}, remoteMD5=${remoteMd5}`);
+      return false;
+    }
+    appendLog(job, `MinIO 文件大小和 MD5 校验通过: ${remoteSize} bytes, MD5=${localMd5}`);
     return true;
   }
 
@@ -481,15 +485,15 @@ async function cleanupTempObjects(filename, job, options = {}) {
 
 async function uploadDirectly(file, job) {
   appendLog(job, `开始上传到 MinIO: ${REMOTE_PATH}`);
-  const uploadStartedAt = new Date();
   try {
     await runCommand("rclone", buildRcloneArgs(file), job, { timeoutMs: UPLOAD_MAX_SECONDS * 1000 });
   } catch (error) {
     appendLog(job, error.timedOut ? "上传命令超时，开始检查 MinIO 目标文件" : "上传命令失败，开始检查 MinIO 目标文件");
-    const uploaded = await verifyUploadedObject(file, job.filename, job, { minModTime: uploadStartedAt });
+    const uploaded = await verifyUploadedObject(file, job.filename, job);
     if (!uploaded) throw error;
     appendLog(job, "上传命令异常但目标文件校验通过，按成功处理");
   }
+  if (!await verifyUploadedObject(file, job.filename, job)) throw new Error("正式对象内容校验失败");
 }
 
 async function uploadViaTempObject(file, job) {
@@ -527,7 +531,6 @@ async function uploadViaTempObject(file, job) {
       appendLog(job, "临时对象校验通过，直接创建新正式对象，不删除旧版本");
     }
 
-    const finalUploadStartedAt = new Date();
     appendLog(job, `开始创建新正式对象: ${remoteObjectPath(job.filename)}`);
     let finalCreated = false;
     try {
@@ -537,7 +540,7 @@ async function uploadViaTempObject(file, job) {
       finalCreated = true;
     } catch (error) {
       appendLog(job, error.timedOut ? "正式对象创建超时，开始检查正式对象" : "正式对象创建异常，开始检查正式对象");
-      const uploaded = await verifyUploadedObject(file, job.filename, job, { minModTime: finalUploadStartedAt });
+      const uploaded = await verifyUploadedObject(file, job.filename, job);
       if (uploaded) {
         appendLog(job, "正式对象校验通过，按成功处理");
         finalCreated = true;
@@ -550,7 +553,7 @@ async function uploadViaTempObject(file, job) {
           finalCreated = true;
         } catch (copyError) {
           appendLog(job, copyError.timedOut ? "临时对象复制为正式对象超时，开始检查正式对象" : "临时对象复制为正式对象异常，开始检查正式对象");
-          const copied = await verifyUploadedObject(file, job.filename, job, { minModTime: finalUploadStartedAt });
+          const copied = await verifyUploadedObject(file, job.filename, job);
           if (!copied) {
             cleanupTemp = false;
             appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);
@@ -564,7 +567,7 @@ async function uploadViaTempObject(file, job) {
 
     if (!finalCreated) throw new Error("正式对象创建失败");
 
-    const finalReady = await verifyUploadedObject(file, job.filename, job, { minModTime: finalUploadStartedAt });
+    const finalReady = await verifyUploadedObject(file, job.filename, job);
     if (!finalReady) {
       cleanupTemp = false;
       appendLog(job, `正式对象未校验通过，保留临时对象用于恢复: ${remoteObjectPath(tempFilename)}`);

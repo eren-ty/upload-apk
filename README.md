@@ -67,7 +67,7 @@ http://服务器IP:3000
 | `RCLONE_CONNECT_TIMEOUT` | `10s` | rclone 连接 MinIO 超时时间 |
 | `RCLONE_RETRIES` | `2` | rclone 失败重试次数 |
 | `RCLONE_LOW_LEVEL_RETRIES` | `2` | rclone 底层请求重试次数 |
-| `UPLOAD_MAX_SECONDS` | `120` | 上传命令硬超时；上传异常后会检查 MinIO 目标文件大小，一致则按成功处理 |
+| `UPLOAD_MAX_SECONDS` | `120` | 上传命令硬超时；上传异常后要求 MinIO 文件大小和 MD5 均一致才按成功处理 |
 | `FINALIZE_MAX_SECONDS` | 同 `UPLOAD_MAX_SECONDS` | 创建正式对象的硬超时；版本控制 bucket 创建新版本较慢时可调大 |
 | `DELETE_TIMEOUT_SECONDS` | `180` | 删除旧正式对象单次等待秒数；部分 MinIO 删除会慢于上传 |
 | `DELETE_RETRIES` | `3` | 删除旧正式对象失败或超时后的重试次数 |
